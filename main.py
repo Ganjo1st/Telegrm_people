@@ -75,7 +75,6 @@ async def process_check_main_sub(callback_query: types.CallbackQuery):
 
 @dp.message(F.text == "📢 Добавить свой канал")
 async def add_channel_start(message: types.Message, state: FSMContext):
-    # Проверка: не добавил ли он уже канал
     user = db.get_user(message.from_user.id)
     if user and user[2]:
         await message.answer("❌ Ты уже добавил канал. Один пользователь может продвигать только один канал.")
@@ -96,7 +95,6 @@ async def add_channel_process(message: types.Message, state: FSMContext):
 
     channel_username = "@" + link.split("/")[-1]
     
-    # Проверка на дубликат
     if db.get_user_by_channel(channel_username):
         await message.answer("❌ Этот канал уже добавлен в систему другим пользователем.")
         await state.clear()
@@ -109,9 +107,8 @@ async def add_channel_process(message: types.Message, state: FSMContext):
             await message.answer("❌ Это не канал. Пожалуйста, отправь ссылку на канал.")
             return
             
-        # Защита от пустых каналов (если есть информация о количестве участников)
         member_count = await bot.get_chat_member_count(channel_username)
-        if member_count < 20: # Минимальный порог
+        if member_count < 20:
             await message.answer(f"❌ В твоем канале слишком мало подписчиков ({member_count}). Для участия нужно минимум 20.")
             return
             
@@ -135,6 +132,12 @@ async def get_task(message: types.Message):
         return
         
     channel_link, channel_id, owner_id = task
+    
+    # Исправляем ссылку, если она пришла в формате @username (для приватных каналов)
+    if channel_link.startswith("https://t.me/"):
+        pass # Уже правильная ссылка
+    elif channel_link.startswith("@"):
+        channel_link = f"https://t.me/{channel_link[1:]}"
     
     await message.answer(
         f"🎯 <b>Новое задание!</b>\n\n"
@@ -167,7 +170,6 @@ async def show_profile(message: types.Message):
         points = user[4]
         channel = user[2] if user[2] else "Не добавлен"
         
-        # Пояснение по баллам
         if points > 0:
             status = "Твой канал участвует в показах."
         else:
