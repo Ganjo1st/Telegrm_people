@@ -13,26 +13,18 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 from config import BOT_TOKEN, CHANNEL_ID
 import database as db
 
-# Настраиваем логирование
 logging.basicConfig(level=logging.INFO)
 
-# ==========================================
-# НАСТРОЙКИ ПРОКСИ (Cloudflare Worker)
-# ==========================================
-# ВАЖНО: Убедитесь, что здесь ВАШ реальный адрес с https://
 PROXY_API_URL = "https://tg-proxy.vadetion.workers.dev" 
 
 session = AiohttpSession(api=TelegramAPIServer.from_base(PROXY_API_URL))
 bot = Bot(token=BOT_TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# --- Состояния FSM ---
 class ChannelStates(StatesGroup):
     waiting_for_link = State()
 
-# --- Клавиатуры ---
 def get_main_menu():
-    """Главное меню пользователя."""
     kb = [
         [KeyboardButton(text="📢 Добавить свой канал")],
         [KeyboardButton(text="🎯 Получить задание (заработать баллы)")],
@@ -41,16 +33,13 @@ def get_main_menu():
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 def get_sub_check_kb(channel_link: str, channel_id: str):
-    """Клавиатура для проверки подписки на канал из задания."""
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📢 Перейти в канал", url=channel_link)],
         [InlineKeyboardButton(text="✅ Я подписался (Проверить)", callback_data=f"check_task_{channel_id}")]
     ])
     return kb
 
-# --- Хелперы ---
 async def is_subscribed(user_id: int, channel_id: str) -> bool:
-    """Проверяет подписку пользователя на конкретный канал."""
     try:
         member = await bot.get_chat_member(chat_id=channel_id, user_id=user_id)
         return member.status in ["creator", "administrator", "member"]
@@ -58,18 +47,13 @@ async def is_subscribed(user_id: int, channel_id: str) -> bool:
         logging.error(f"Ошибка проверки подписки на {channel_id}: {e}")
         return False
 
-# --- Обработчики ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     db.register_user(message.from_user.id, message.from_user.username or message.from_user.first_name)
     
-    # Проверяем, подписан ли на основной канал
-    subscribed = await is_subscribed(message.from_user.id, CHANNEL_ID)
-    
-    if subscribed:
+    if await is_subscribed(message.from_user.id, CHANNEL_ID):
         await message.answer(
             f"Привет, {message.from_user.full_name}! 👋\n\n"
-            "Ты в главном меню системы взаимного пиара.\n"
             "Выбирай действие на клавиатуре ниже.",
             reply_markup=get_main_menu()
         )
@@ -89,12 +73,17 @@ async def process_check_main_sub(callback_query: types.CallbackQuery):
     else:
         await callback_query.answer("Ты еще не подписался.", show_alert=True)
 
-# --- Добавление канала ---
 @dp.message(F.text == "📢 Добавить свой канал")
 async def add_channel_start(message: types.Message, state: FSMContext):
+    # Проверка: не добавил ли он уже канал
+    user = db.get_user(message.from_user.id)
+    if user and user[2]:
+        await message.answer("❌ Ты уже добавил канал. Один пользователь может продвигать только один канал.")
+        return
+        
     await message.answer(
         "Отправь мне ссылку на свой канал (например, https://t.me/my_channel).\n"
-        "⚠️ Важно: добавь нашего бота в администраторы своего канала с правами на чтение сообщений, чтобы я мог проверять подписку!"
+        "⚠️ Важно: добавь нашего бота в администраторы своего канала!"
     )
     await state.set_state(ChannelStates.waiting_for_link)
 
@@ -107,17 +96,28 @@ async def add_channel_process(message: types.Message, state: FSMContext):
 
     channel_username = "@" + link.split("/")[-1]
     
+    # Проверка на дубликат
+    if db.get_user_by_channel(channel_username):
+        await message.answer("❌ Этот канал уже добавлен в систему другим пользователем.")
+        await state.clear()
+        return
+    
     try:
-        # Пытаемся получить информацию о канале, чтобы убедиться, что бот там админ
         chat = await bot.get_chat(channel_username)
+        
         if chat.type not in ["channel", "supergroup"]:
             await message.answer("❌ Это не канал. Пожалуйста, отправь ссылку на канал.")
             return
             
-        # Сохраняем канал в БД
+        # Защита от пустых каналов (если есть информация о количестве участников)
+        member_count = await bot.get_chat_member_count(channel_username)
+        if member_count < 20: # Минимальный порог
+            await message.answer(f"❌ В твоем канале слишком мало подписчиков ({member_count}). Для участия нужно минимум 20.")
+            return
+            
         db.add_channel(message.from_user.id, link, channel_username)
         await message.answer(
-            "✅ Твой канал успешно добавлен в очередь на продвижение!\n"
+            "✅ Твой канал успешно добавлен в очередь!\n"
             "Тебе начислено 10 баллов. Теперь выполняй задания, чтобы заработать еще.",
             reply_markup=get_main_menu()
         )
@@ -126,14 +126,12 @@ async def add_channel_process(message: types.Message, state: FSMContext):
     
     await state.clear()
 
-# --- Получение задания ---
 @dp.message(F.text == "🎯 Получить задание (заработать баллы)")
 async def get_task(message: types.Message):
-    # Проверяем, не закончились ли каналы для показа
     task = db.get_random_channel_for_user(message.from_user.id)
     
     if not task:
-        await message.answer("😔 Пока нет доступных заданий. Заходи позже, когда другие пользователи добавят свои каналы!")
+        await message.answer("😔 Пока нет доступных заданий (или у всех закончились баллы). Заходи позже!")
         return
         
     channel_link, channel_id, owner_id = task
@@ -160,28 +158,33 @@ async def process_task_check(callback_query: types.CallbackQuery):
             reply_markup=get_main_menu()
         )
     else:
-        await callback_query.answer("❌ Ты еще не подписался на этот канал. Подпишись и попробуй снова.", show_alert=True)
+        await callback_query.answer("❌ Ты еще не подписался. Подпишись и попробуй снова.", show_alert=True)
 
-# --- Профиль ---
 @dp.message(F.text == "🏆 Мой профиль")
 async def show_profile(message: types.Message):
     user = db.get_user(message.from_user.id)
     if user:
-        # user: (id, username, channel_link, channel_id, points)
         points = user[4]
         channel = user[2] if user[2] else "Не добавлен"
+        
+        # Пояснение по баллам
+        if points > 0:
+            status = "Твой канал участвует в показах."
+        else:
+            status = "⚠️ У тебя 0 баллов. Твой канал не показывается другим. Выполни задания, чтобы заработать!"
+            
         await message.answer(
             f"🏆 <b>Твой профиль:</b>\n\n"
-            f"🆔 ID: <code>{user[0]}</code>\n"
             f"📢 Твой канал: {channel}\n"
-            f"💰 Баллы: <b>{points}</b>\n\n"
-            f"<i>(Баллы нужны для того, чтобы твой канал чаще показывали другим. Добавление канала +10, выполнение задания +5)</i>"
+            f"💰 Баллы: <b>{points}</b>\n"
+            f"📊 Статус: {status}\n\n"
+            f"<i>(+10 за добавление, +5 за выполнение, -1 за каждый показ твоего канала другим)</i>"
         )
     else:
         await message.answer("Профиль не найден. Напиши /start")
 
 async def main():
-    db.init_db() # Инициализируем БД при запуске
+    db.init_db()
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
