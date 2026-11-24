@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -32,7 +32,7 @@ def get_main_menu():
     kb = [
         [KeyboardButton(text="📢 Добавить свой канал")],
         [KeyboardButton(text="🎯 Получить задание (заработать баллы)")],
-        [KeyboardButton(text="🏆 Мой профиль")]
+        [KeyboardButton(text="🏆 Мой профиль"), KeyboardButton(text="👥 Пригласить друга")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
@@ -52,7 +52,6 @@ async def is_subscribed(user_id: int, channel_id: str) -> bool:
         return False
 
 async def check_channel_alive(channel_id: str) -> bool:
-    """Тихая проверка: жив ли канал и остался ли там бот."""
     try:
         await bot.get_chat(chat_id=channel_id)
         return True
@@ -60,8 +59,14 @@ async def check_channel_alive(channel_id: str) -> bool:
         return False
 
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    db.register_user(message.from_user.id, message.from_user.username or message.from_user.first_name)
+async def cmd_start(message: types.Message, command: CommandObject):
+    # Обработка реферальной ссылки (если есть параметр start)
+    referrer_id = None
+    if command.args and command.args.isdigit():
+        referrer_id = int(command.args)
+
+    # Регистрируем пользователя (внутри проверится, новый он или нет)
+    db.register_user(message.from_user.id, message.from_user.username or message.from_user.first_name, referrer_id)
     
     if await is_subscribed(message.from_user.id, CHANNEL_ID):
         await message.answer(
@@ -145,12 +150,9 @@ async def get_task(message: types.Message):
         
     channel_link, channel_id, owner_id = task
     
-    # Проверяем, жив ли канал
     if not await check_channel_alive(channel_id):
-        # Если канал мертв, помечаем его неактивным и пробуем выдать другое задание
         db.mark_channel_inactive(owner_id)
         await message.answer("⚠️ Попался неактивный канал. Ищем для тебя другое задание...")
-        # Рекурсивно вызываем функцию еще раз (но не бесконечно)
         await asyncio.sleep(1)
         await get_task(message)
         return
@@ -184,6 +186,22 @@ async def process_task_check(callback_query: types.CallbackQuery):
     else:
         await callback_query.answer("❌ Ты еще не подписался. Подпишись и попробуй снова.", show_alert=True)
 
+@dp.message(F.text == "👥 Пригласить друга")
+async def invite_friend(message: types.Message):
+    user_id = message.from_user.id
+    # Формируем реферальную ссылку
+    bot_username = (await bot.me()).username
+    ref_link = f"https://t.me/{bot_username}?start={user_id}"
+    
+    referral_count = db.get_referral_count(user_id)
+    
+    await message.answer(
+        f"👥 <b>Приглашай друзей и зарабатывай баллы!</b>\n\n"
+        f"За каждого друга, который зайдет по твоей ссылке и запустит бота, ты получишь <b>+50 баллов</b>.\n\n"
+        f"🔗 Твоя ссылка:\n<code>{ref_link}</code>\n\n"
+        f"📊 Ты уже пригласил: <b>{referral_count}</b> чел."
+    )
+
 @dp.message(F.text == "🏆 Мой профиль")
 async def show_profile(message: types.Message):
     user = db.get_user(message.from_user.id)
@@ -205,7 +223,7 @@ async def show_profile(message: types.Message):
             f"🔘 Статус: {is_active}\n"
             f"💰 Баллы: <b>{points}</b>\n"
             f"📊 {status}\n\n"
-            f"<i>(+10 за добавление, +5 за выполнение, -1 за каждый показ)</i>"
+            f"<i>(+10 за добавление, +5 за выполнение, +50 за друга, -1 за показ)</i>"
         )
     else:
         await message.answer("Профиль не найден. Напиши /start")
