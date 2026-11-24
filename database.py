@@ -7,6 +7,8 @@ DB_PATH = "pr_bot.db"
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    
+    # Создаем таблицу users, если её нет
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -17,6 +19,15 @@ def init_db():
             is_active INTEGER DEFAULT 1
         )
     ''')
+    
+    # ПРОВЕРКА: если таблица уже была создана ранее без колонки is_active, добавляем её
+    cursor.execute("PRAGMA table_info(users)")
+    columns = [column[1] for column in cursor.fetchall()]
+    if 'is_active' not in columns:
+        logging.info("Добавляем колонку is_active в таблицу users...")
+        cursor.execute("ALTER TABLE users ADD COLUMN is_active INTEGER DEFAULT 1")
+    
+    # Создаем таблицу completed_tasks, если её нет
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS completed_tasks (
             user_id INTEGER,
@@ -24,6 +35,7 @@ def init_db():
             PRIMARY KEY (user_id, target_channel_id)
         )
     ''')
+    
     conn.commit()
     conn.close()
     logging.info("База данных инициализирована.")
@@ -66,7 +78,6 @@ def add_channel(user_id: int, channel_link: str, channel_id: str):
     conn.close()
 
 def mark_channel_inactive(user_id: int):
-    """Помечает канал как неактивный (удален или бот заблокирован)."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET is_active = 0 WHERE user_id = ?", (user_id,))
@@ -76,7 +87,6 @@ def mark_channel_inactive(user_id: int):
 def get_random_channel_for_user(user_id: int) -> Optional[Tuple[str, str, int]]:
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    # Ищем только активные каналы
     query = '''
         SELECT u.channel_link, u.channel_id, u.user_id, u.points
         FROM users u
