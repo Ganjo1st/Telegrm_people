@@ -5,7 +5,6 @@ from typing import Optional, Tuple
 DB_PATH = "pr_bot.db"
 
 def init_db():
-    """Инициализация базы данных и создание таблиц."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
@@ -20,7 +19,7 @@ def init_db():
         )
     ''')
     
-    # Таблица для отслеживания выполненных заданий (чтобы не показывать одно и то же)
+    # Таблица выполненных заданий
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS completed_tasks (
             user_id INTEGER,
@@ -34,7 +33,6 @@ def init_db():
     logging.info("База данных инициализирована.")
 
 def get_user(user_id: int) -> Optional[Tuple]:
-    """Получает данные пользователя по его ID."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
@@ -42,8 +40,16 @@ def get_user(user_id: int) -> Optional[Tuple]:
     conn.close()
     return user
 
+def get_user_by_channel(channel_id: str) -> Optional[Tuple]:
+    """Проверяет, существует ли уже такой канал в базе."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE channel_id = ?", (channel_id,))
+    user = cursor.fetchone()
+    conn.close()
+    return user
+
 def register_user(user_id: int, username: str):
-    """Регистрирует нового пользователя, если его еще нет."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     try:
@@ -55,10 +61,8 @@ def register_user(user_id: int, username: str):
         conn.close()
 
 def add_channel(user_id: int, channel_link: str, channel_id: str):
-    """Сохраняет канал пользователя для участия в ВП."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    # Обновляем данные пользователя и начисляем 10 баллов за добавление канала
     cursor.execute(
         "UPDATE users SET channel_link = ?, channel_id = ?, points = points + 10 WHERE user_id = ?",
         (channel_link, channel_id, user_id)
@@ -68,53 +72,47 @@ def add_channel(user_id: int, channel_link: str, channel_id: str):
 
 def get_random_channel_for_user(user_id: int) -> Optional[Tuple[str, str, int]]:
     """
-    Выбирает случайный канал из базы для показа пользователю.
-    Исключает его собственный канал и каналы, на которые он уже подписывался.
+    Выбирает канал для показа.
+    Приоритет отдается каналам с БОЛЬШИМ количеством баллов.
+    Исключает свой канал и те, на которые уже подписывались.
     """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
+    # Сортируем по убыванию баллов (points DESC) и берем первый попавшийся из топовых
     query = '''
-        SELECT channel_link, channel_id, user_id 
-        FROM users 
-        WHERE channel_link IS NOT NULL 
-          AND user_id != ? 
-          AND user_id NOT IN (
-              SELECT target_channel_id FROM completed_tasks WHERE user_id = ?
-          )
-        ORDER BY RANDOM() LIMIT 1
-    '''
-    # ВАЖНО: В таблице completed_tasks мы храним user_id того, кто выполнил, и target_channel_id
-    # Но в запросе выше мы сравниваем user_id с target_channel_id. Исправим логику:
-    
-    # Правильный запрос: ищем каналы других пользователей, которые текущий юзер еще не выполнял
-    query = '''
-        SELECT u.channel_link, u.channel_id, u.user_id 
+        SELECT u.channel_link, u.channel_id, u.user_id, u.points
         FROM users u
         WHERE u.channel_link IS NOT NULL 
+          AND u.points > 0 
           AND u.user_id != ? 
           AND u.channel_id NOT IN (
               SELECT target_channel_id FROM completed_tasks WHERE user_id = ?
           )
-        ORDER BY RANDOM() LIMIT 1
+        ORDER BY u.points DESC, RANDOM() LIMIT 1
     '''
     
     cursor.execute(query, (user_id, user_id))
     row = cursor.fetchone()
+    
+    if row:
+        channel_link, channel_id, owner_id, points = row
+        # СПИСЫВАЕМ 1 БАЛЛ у владельца канала за показ (рекламу)
+        cursor.execute("UPDATE users SET points = points - 1 WHERE user_id = ?", (owner_id,))
+        conn.commit()
+        
     conn.close()
-    return row
+    return (row[0], row[1], row[2]) if row else None
 
 def mark_task_completed(user_id: int, target_channel_id: str):
-    """Отмечает задание как выполненное и начисляет баллы за подписку."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     try:
-        # Записываем в выполненные
         cursor.execute(
             "INSERT OR IGNORE INTO completed_tasks (user_id, target_channel_id) VALUES (?, ?)",
             (user_id, target_channel_id)
         )
-        # Начисляем 5 баллов за выполнение задания
+        # Начисляем 5 баллов выполнившему
         cursor.execute("UPDATE users SET points = points + 5 WHERE user_id = ?", (user_id,))
         conn.commit()
     except Exception as e:
