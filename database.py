@@ -13,7 +13,8 @@ def init_db():
             username TEXT,
             channel_link TEXT,
             channel_id TEXT,
-            points INTEGER DEFAULT 0
+            points INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1
         )
     ''')
     cursor.execute('''
@@ -58,20 +59,30 @@ def add_channel(user_id: int, channel_link: str, channel_id: str):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute(
-        "UPDATE users SET channel_link = ?, channel_id = ?, points = points + 10 WHERE user_id = ?",
+        "UPDATE users SET channel_link = ?, channel_id = ?, points = points + 10, is_active = 1 WHERE user_id = ?",
         (channel_link, channel_id, user_id)
     )
+    conn.commit()
+    conn.close()
+
+def mark_channel_inactive(user_id: int):
+    """Помечает канал как неактивный (удален или бот заблокирован)."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET is_active = 0 WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
 
 def get_random_channel_for_user(user_id: int) -> Optional[Tuple[str, str, int]]:
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    # Ищем только активные каналы
     query = '''
         SELECT u.channel_link, u.channel_id, u.user_id, u.points
         FROM users u
         WHERE u.channel_link IS NOT NULL 
           AND u.points > 0 
+          AND u.is_active = 1
           AND u.user_id != ? 
           AND u.channel_id NOT IN (
               SELECT target_channel_id FROM completed_tasks WHERE user_id = ?
