@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO)
 # НАСТРОЙКИ
 # ==========================================
 PROXY_API_URL = "https://tg-proxy.vadetion.workers.dev" 
-MIN_SUBSCRIBERS = 0  # Порог подписчиков для добавления канала (0 для тестов)
+MIN_SUBSCRIBERS = 0  # Поставьте 20, когда будете готовы к реальному запуску
 
 session = AiohttpSession(api=TelegramAPIServer.from_base(PROXY_API_URL))
 bot = Bot(token=BOT_TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -49,6 +49,14 @@ async def is_subscribed(user_id: int, channel_id: str) -> bool:
         return member.status in ["creator", "administrator", "member"]
     except Exception as e:
         logging.error(f"Ошибка проверки подписки на {channel_id}: {e}")
+        return False
+
+async def check_channel_alive(channel_id: str) -> bool:
+    """Тихая проверка: жив ли канал и остался ли там бот."""
+    try:
+        await bot.get_chat(chat_id=channel_id)
+        return True
+    except Exception:
         return False
 
 @dp.message(Command("start"))
@@ -137,6 +145,16 @@ async def get_task(message: types.Message):
         
     channel_link, channel_id, owner_id = task
     
+    # Проверяем, жив ли канал
+    if not await check_channel_alive(channel_id):
+        # Если канал мертв, помечаем его неактивным и пробуем выдать другое задание
+        db.mark_channel_inactive(owner_id)
+        await message.answer("⚠️ Попался неактивный канал. Ищем для тебя другое задание...")
+        # Рекурсивно вызываем функцию еще раз (но не бесконечно)
+        await asyncio.sleep(1)
+        await get_task(message)
+        return
+
     if channel_link.startswith("https://t.me/"):
         pass 
     elif channel_link.startswith("@"):
@@ -172,18 +190,22 @@ async def show_profile(message: types.Message):
     if user:
         points = user[4]
         channel = user[2] if user[2] else "Не добавлен"
+        is_active = "✅ Активен" if user[5] == 1 else "❌ Неактивен (удален)"
         
-        if points > 0:
+        if points > 0 and user[5] == 1:
             status = "Твой канал участвует в показах."
+        elif user[5] == 0:
+            status = "⚠️ Твой канал помечен как неактивный. Добавь его заново или проверь права бота."
         else:
             status = "⚠️ У тебя 0 баллов. Твой канал не показывается другим. Выполни задания, чтобы заработать!"
             
         await message.answer(
             f"🏆 <b>Твой профиль:</b>\n\n"
             f"📢 Твой канал: {channel}\n"
+            f"🔘 Статус: {is_active}\n"
             f"💰 Баллы: <b>{points}</b>\n"
-            f"📊 Статус: {status}\n\n"
-            f"<i>(+10 за добавление, +5 за выполнение, -1 за каждый показ твоего канала другим)</i>"
+            f"📊 {status}\n\n"
+            f"<i>(+10 за добавление, +5 за выполнение, -1 за каждый показ)</i>"
         )
     else:
         await message.answer("Профиль не найден. Напиши /start")
