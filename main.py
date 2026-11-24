@@ -15,7 +15,11 @@ import database as db
 
 logging.basicConfig(level=logging.INFO)
 
+# ==========================================
+# НАСТРОЙКИ
+# ==========================================
 PROXY_API_URL = "https://tg-proxy.vadetion.workers.dev" 
+MIN_SUBSCRIBERS = 0  # Порог подписчиков для добавления канала (0 для тестов)
 
 session = AiohttpSession(api=TelegramAPIServer.from_base(PROXY_API_URL))
 bot = Bot(token=BOT_TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -108,8 +112,8 @@ async def add_channel_process(message: types.Message, state: FSMContext):
             return
             
         member_count = await bot.get_chat_member_count(channel_username)
-        if member_count < 20:
-            await message.answer(f"❌ В твоем канале слишком мало подписчиков ({member_count}). Для участия нужно минимум 20.")
+        if member_count < MIN_SUBSCRIBERS:
+            await message.answer(f"❌ В твоем канале слишком мало подписчиков ({member_count}). Для участия нужно минимум {MIN_SUBSCRIBERS}.")
             return
             
         db.add_channel(message.from_user.id, link, channel_username)
@@ -133,9 +137,8 @@ async def get_task(message: types.Message):
         
     channel_link, channel_id, owner_id = task
     
-    # Исправляем ссылку, если она пришла в формате @username (для приватных каналов)
     if channel_link.startswith("https://t.me/"):
-        pass # Уже правильная ссылка
+        pass 
     elif channel_link.startswith("@"):
         channel_link = f"https://t.me/{channel_link[1:]}"
     
