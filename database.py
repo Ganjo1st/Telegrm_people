@@ -7,8 +7,6 @@ DB_PATH = "pr_bot.db"
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
-    # Таблица пользователей
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -18,8 +16,6 @@ def init_db():
             points INTEGER DEFAULT 0
         )
     ''')
-    
-    # Таблица выполненных заданий
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS completed_tasks (
             user_id INTEGER,
@@ -27,7 +23,6 @@ def init_db():
             PRIMARY KEY (user_id, target_channel_id)
         )
     ''')
-    
     conn.commit()
     conn.close()
     logging.info("База данных инициализирована.")
@@ -41,7 +36,6 @@ def get_user(user_id: int) -> Optional[Tuple]:
     return user
 
 def get_user_by_channel(channel_id: str) -> Optional[Tuple]:
-    """Проверяет, существует ли уже такой канал в базе."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM users WHERE channel_id = ?", (channel_id,))
@@ -71,15 +65,8 @@ def add_channel(user_id: int, channel_link: str, channel_id: str):
     conn.close()
 
 def get_random_channel_for_user(user_id: int) -> Optional[Tuple[str, str, int]]:
-    """
-    Выбирает канал для показа.
-    Приоритет отдается каналам с БОЛЬШИМ количеством баллов.
-    Исключает свой канал и те, на которые уже подписывались.
-    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
-    # Сортируем по убыванию баллов (points DESC) и берем первый попавшийся из топовых
     query = '''
         SELECT u.channel_link, u.channel_id, u.user_id, u.points
         FROM users u
@@ -91,16 +78,12 @@ def get_random_channel_for_user(user_id: int) -> Optional[Tuple[str, str, int]]:
           )
         ORDER BY u.points DESC, RANDOM() LIMIT 1
     '''
-    
     cursor.execute(query, (user_id, user_id))
     row = cursor.fetchone()
-    
     if row:
         channel_link, channel_id, owner_id, points = row
-        # СПИСЫВАЕМ 1 БАЛЛ у владельца канала за показ (рекламу)
         cursor.execute("UPDATE users SET points = points - 1 WHERE user_id = ?", (owner_id,))
         conn.commit()
-        
     conn.close()
     return (row[0], row[1], row[2]) if row else None
 
@@ -112,7 +95,6 @@ def mark_task_completed(user_id: int, target_channel_id: str):
             "INSERT OR IGNORE INTO completed_tasks (user_id, target_channel_id) VALUES (?, ?)",
             (user_id, target_channel_id)
         )
-        # Начисляем 5 баллов выполнившему
         cursor.execute("UPDATE users SET points = points + 5 WHERE user_id = ?", (user_id,))
         conn.commit()
     except Exception as e:
