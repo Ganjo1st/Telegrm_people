@@ -6,10 +6,8 @@ from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from config import BOT_TOKEN, CHANNEL_ID
 
-# Настраиваем логирование
 logging.basicConfig(level=logging.INFO)
 
-# Инициализируем бота и диспетчер
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
@@ -20,8 +18,8 @@ async def is_subscribed(user_id: int) -> bool:
     """
     try:
         member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        # Если статус не 'left' и не 'kicked', значит пользователь подписан
-        return member.status not in ["left", "kicked"]
+        # Явно проверяем статусы, означающие подписку
+        return member.status in ["creator", "administrator", "member"]
     except Exception as e:
         logging.error(f"Ошибка при проверке подписки: {e}")
         return False
@@ -36,12 +34,12 @@ async def cmd_start(message: types.Message):
             f"Привет, {message.from_user.full_name}! 👋\n\n"
             "Ты уже подписан на наш канал. Добро пожаловать в систему взаимного пиара!"
         )
-        # Здесь в будущем будет логика выдачи заданий
     else:
-        # Создаем кнопку со ссылкой на канал
+        # Создаем кнопку со ссылкой на канал (убираем @ из юзернейма для URL)
+        channel_url = f"https://t.me/{CHANNEL_ID.replace('@', '')}"
         keyboard = types.InlineKeyboardMarkup(
             inline_keyboard=[
-                [types.InlineKeyboardButton(text="📢 Подписаться на канал", url=f"https://t.me/{CHANNEL_ID.replace('@', '')}")],
+                [types.InlineKeyboardButton(text="📢 Подписаться на канал", url=channel_url)],
                 [types.InlineKeyboardButton(text="✅ Проверить подписку", callback_data="check_sub")]
             ]
         )
@@ -55,7 +53,6 @@ async def process_check_sub(callback_query: types.CallbackQuery):
     subscribed = await is_subscribed(callback_query.from_user.id)
     if subscribed:
         await callback_query.message.edit_text("Отлично! Ты подписан. Теперь ты можешь участвовать в взаимном пиаре.")
-        # Здесь будет логика выдачи заданий
     else:
         await callback_query.answer("Ты еще не подписался на канал. Пожалуйста, подпишись и попробуй снова.", show_alert=True)
 
