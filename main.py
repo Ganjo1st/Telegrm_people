@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode
@@ -19,7 +20,11 @@ logging.basicConfig(level=logging.INFO)
 # НАСТРОЙКИ
 # ==========================================
 PROXY_API_URL = "https://tg-proxy.vadetion.workers.dev" 
-MIN_SUBSCRIBERS = 0  # Поставьте 20, когда будете готовы к реальному запуску
+MIN_SUBSCRIBERS = 0  
+MIN_CHANNEL_AGE_DAYS = 3 # Канал должен существовать минимум 3 дня (защита от спама)
+
+# Запрещенные слова (в нижнем регистре)
+BLACKLIST_WORDS = ["казино", "ставки", "18+", "порно", "крипто", "обменник", "заработок", "инвестиции"]
 
 session = AiohttpSession(api=TelegramAPIServer.from_base(PROXY_API_URL))
 bot = Bot(token=BOT_TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -60,12 +65,10 @@ async def check_channel_alive(channel_id: str) -> bool:
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, command: CommandObject):
-    # Обработка реферальной ссылки (если есть параметр start)
     referrer_id = None
     if command.args and command.args.isdigit():
         referrer_id = int(command.args)
 
-    # Регистрируем пользователя (внутри проверится, новый он или нет)
     db.register_user(message.from_user.id, message.from_user.username or message.from_user.first_name, referrer_id)
     
     if await is_subscribed(message.from_user.id, CHANNEL_ID):
@@ -112,21 +115,44 @@ async def add_channel_process(message: types.Message, state: FSMContext):
 
     channel_username = "@" + link.split("/")[-1]
     
+    # 1. Проверка на дубликат
     if db.get_user_by_channel(channel_username):
         await message.answer("❌ Этот канал уже добавлен в систему другим пользователем.")
+        await state.clear()
+        return
+    
+    # 2. Проверка на запрещенные слова в юзернейме
+    if any(word in channel_username.lower() for word in BLACKLIST_WORDS):
+        await message.answer("❌ Этот канал не может быть добавлен (нарушение правил).")
         await state.clear()
         return
     
     try:
         chat = await bot.get_chat(channel_username)
         
+        # 3. Проверка на тип чата
         if chat.type not in ["channel", "supergroup"]:
             await message.answer("❌ Это не канал. Пожалуйста, отправь ссылку на канал.")
             return
             
+        # 4. Проверка на запрещенные слова в названии
+        if any(word in chat.title.lower() for word in BLACKLIST_WORDS):
+            await message.answer("❌ Название канала содержит запрещенные слова.")
+            return
+
+        # 5. Проверка на возраст канала (защита от спама)
+        # Примечание: Telegram не всегда отдает дату создания, но если отдает - проверяем
+        if hasattr(chat, 'date') and chat.date:
+             # chat.date возвращает unix timestamp
+             channel_age = datetime.now() - datetime.fromtimestamp(chat.date)
+             if channel_age.days < MIN_CHANNEL_AGE_DAYS:
+                 await message.answer(f"❌ Канал слишком новый (менее {MIN_CHANNEL_AGE_DAYS} дней). Подожди немного.")
+                 return
+            
+        # 6. Проверка на количество подписчиков
         member_count = await bot.get_chat_member_count(channel_username)
         if member_count < MIN_SUBSCRIBERS:
-            await message.answer(f"❌ В твоем канале слишком мало подписчиков ({member_count}). Для участия нужно минимум {MIN_SUBSCRIBERS}.")
+            await message.answer(f"❌ В твоем канале слишком мало подписчиков ({member_count}).")
             return
             
         db.add_channel(message.from_user.id, link, channel_username)
@@ -189,39 +215,47 @@ async def process_task_check(callback_query: types.CallbackQuery):
 @dp.message(F.text == "👥 Пригласить друга")
 async def invite_friend(message: types.Message):
     user_id = message.from_user.id
-    # Формируем реферальную ссылку
     bot_username = (await bot.me()).username
     ref_link = f"https://t.me/{bot_username}?start={user_id}"
-    
     referral_count = db.get_referral_count(user_id)
+    
+    share_text = f"Присоединяйся к системе взаимного пиара! Зарабатывай баллы и продвигай свой канал."
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📤 Поделиться ссылкой", url=f"https://t.me/share/url?url={ref_link}&text={share_text}")]
+    ])
     
     await message.answer(
         f"👥 <b>Приглашай друзей и зарабатывай баллы!</b>\n\n"
-        f"За каждого друга, который зайдет по твоей ссылке и запустит бота, ты получишь <b>+50 баллов</b>.\n\n"
+        f"За каждого друга, который зайдет по твоей ссылке, ты получишь <b>+50 баллов</b>.\n\n"
         f"🔗 Твоя ссылка:\n<code>{ref_link}</code>\n\n"
-        f"📊 Ты уже пригласил: <b>{referral_count}</b> чел."
+        f"📊 Ты уже пригласил: <b>{referral_count}</b> чел.",
+        reply_markup=keyboard
     )
 
 @dp.message(F.text == "🏆 Мой профиль")
 async def show_profile(message: types.Message):
     user = db.get_user(message.from_user.id)
     if user:
+        # user: id, username, channel_link, channel_id, points, is_active, referrer_id, views_count
         points = user[4]
         channel = user[2] if user[2] else "Не добавлен"
         is_active = "✅ Активен" if user[5] == 1 else "❌ Неактивен (удален)"
+        views = user[7] if len(user) > 7 else 0
         
         if points > 0 and user[5] == 1:
             status = "Твой канал участвует в показах."
         elif user[5] == 0:
-            status = "⚠️ Твой канал помечен как неактивный. Добавь его заново или проверь права бота."
+            status = "⚠️ Твой канал помечен как неактивный. Добавь его заново."
         else:
-            status = "⚠️ У тебя 0 баллов. Твой канал не показывается другим. Выполни задания, чтобы заработать!"
+            status = "⚠️ У тебя 0 баллов. Твой канал не показывается другим. Выполни задания!"
             
         await message.answer(
             f"🏆 <b>Твой профиль:</b>\n\n"
             f"📢 Твой канал: {channel}\n"
             f"🔘 Статус: {is_active}\n"
             f"💰 Баллы: <b>{points}</b>\n"
+            f"👁 Показов канала: {views}\n"
             f"📊 {status}\n\n"
             f"<i>(+10 за добавление, +5 за выполнение, +50 за друга, -1 за показ)</i>"
         )
