@@ -66,7 +66,6 @@ def register_user(user_id: int, username: str, referrer_id: int = None):
             conn.close()
             return
 
-        # Стартовые баллы: если пришел по рефке — 10, иначе 0
         start_points = 10 if referrer_id and referrer_id != user_id else 0
 
         cursor.execute(
@@ -104,14 +103,14 @@ def add_channel(user_id: int, channel_link: str, channel_id: str):
     conn.close()
 
 def remove_channel(user_id: int):
-    """Удаляет канал пользователя и списывает 10 баллов (штраф за удаление)."""
+    """Полностью удаляет канал пользователя (сбрасывает channel_id в NULL) и штрафует на 10 баллов."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    # Проверяем, есть ли у пользователя канал, чтобы не списать баллы дважды
+    # Проверяем, есть ли у пользователя канал
     cursor.execute("SELECT channel_id FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     if row and row[0]:
-        # Используем MAX(0, ...) чтобы баланс не ушел в минус
+        # Сбрасываем channel_id в NULL, чтобы можно было добавить канал заново
         cursor.execute(
             "UPDATE users SET channel_link = NULL, channel_id = NULL, is_active = 0, points = MAX(0, points - 10) WHERE user_id = ?",
             (user_id,)
