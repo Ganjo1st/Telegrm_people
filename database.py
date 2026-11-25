@@ -21,7 +21,6 @@ def init_db():
         )
     ''')
     
-    # Миграция: добавляем новые колонки, если их нет
     cursor.execute("PRAGMA table_info(users)")
     columns = [column[1] for column in cursor.fetchall()]
     
@@ -101,6 +100,17 @@ def add_channel(user_id: int, channel_link: str, channel_id: str):
     conn.commit()
     conn.close()
 
+def remove_channel(user_id: int):
+    """Удаляет канал пользователя из базы."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE users SET channel_link = NULL, channel_id = NULL, is_active = 0 WHERE user_id = ?",
+        (user_id,)
+    )
+    conn.commit()
+    conn.close()
+
 def mark_channel_inactive(user_id: int):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -127,7 +137,6 @@ def get_random_channel_for_user(user_id: int) -> Optional[Tuple[str, str, int]]:
     row = cursor.fetchone()
     if row:
         channel_link, channel_id, owner_id, points = row
-        # Списываем 1 балл и увеличиваем счетчик показов
         cursor.execute("UPDATE users SET points = points - 1, views_count = views_count + 1 WHERE user_id = ?", (owner_id,))
         conn.commit()
     conn.close()
