@@ -5,9 +5,9 @@ on:
     - cron: '0 */6 * * *'
   workflow_dispatch:
 
-# Защита от одновременного запуска двух экземпляров
+# Защита от одновременного запуска: отменяет предыдущий запуск при старте нового
 concurrency:
-  group: telegram-bot
+  group: telegram-bot-${{ github.repository }}
   cancel-in-progress: true
 
 jobs:
@@ -41,7 +41,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           PROXY_API_URL: ${{ secrets.PROXY_API_URL }}
-          USER_ID: ${{ secrets.USER_ID }}  # Ваш ID для админ-панели
+          USER_ID: ${{ secrets.USER_ID }}
         run: python main.py
         
       - name: Save Database
