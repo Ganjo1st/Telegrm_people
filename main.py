@@ -34,7 +34,7 @@ def get_main_menu(user_id: int):
         [KeyboardButton(text="🎯 Получить задание (заработать баллы)")],
         [KeyboardButton(text="🏆 Мой профиль"), KeyboardButton(text="👥 Пригласить друга")]
     ]
-    if user_id == SUPER_ADMIN_ID:
+    if user_id == SUPER_ADMIN_ID:8738221550
         kb.append([KeyboardButton(text="👑 Админ-панель")])
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
