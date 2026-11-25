@@ -1,0 +1,51 @@
+name: Telegram Bot Runner
+
+on:
+  schedule:
+    # Запуск каждые 6 часов. Время в UTC.
+    # GitHub Actions может иметь задержку до 15 минут при высокой нагрузке.
+    - cron: '0 */6 * * *'
+  workflow_dispatch: # Позволяет запускать вручную через вкладку Actions
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          
+      # Восстанавливаем базу данных из кэша (если она есть)
+      - name: Restore Database
+        uses: actions/cache/restore@v4
+        with:
+          path: pr_bot.db
+          key: pr-bot-db-${{ github.repository }}-${{ github.run_id }}
+          restore-keys: |
+            pr-bot-db-${{ github.repository }}-
+          
+      - name: Run Bot
+        env:
+          # Передаем секреты из настроек GitHub в переменные окружения
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          PROXY_API_URL: ${{ secrets.PROXY_API_URL }}
+        run: python main.py
+        
+      # Сохраняем базу данных в кэш после завершения работы бота
+      - name: Save Database
+        if: always() # Сохраняем даже если бот упал с ошибкой
+        uses: actions/cache/save@v4
+        with:
+          path: pr_bot.db
+          key: pr-bot-db-${{ github.repository }}-${{ github.run_id }}
