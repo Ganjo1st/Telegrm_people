@@ -2,7 +2,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command, CommandObject, ChatMemberUpdatedFilter, IS_NOT_MEMBER, ADMINISTRATOR
+from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -56,9 +56,13 @@ async def check_channel_alive(channel_id: str) -> bool:
     except Exception:
         return False
 
-# --- Автоматическое подключение канала при повышении прав бота ---
-@dp.my_chat_member(ChatMemberUpdatedFilter(IS_NOT_MEMBER >> ADMINISTRATOR))
+# --- УПРОЩЁННЫЙ ОБРАБОТЧИК my_chat_member ---
+@dp.my_chat_member()
 async def on_bot_promoted_to_admin(event: types.ChatMemberUpdated):
+    # Срабатываем только если бот стал администратором
+    if event.new_chat_member.status != "administrator":
+        return
+        
     chat = event.chat
     user_id = event.from_user.id
 
@@ -68,7 +72,6 @@ async def on_bot_promoted_to_admin(event: types.ChatMemberUpdated):
     # Ищем канал в базе
     existing = db.get_user_by_channel(f"@{chat.username}" if chat.username else str(chat.id))
     
-    # Если канал найден и он АКТИВЕН, значит он уже в системе
     if existing and existing[5] == 1:
         await bot.send_message(user_id, f"ℹ️ Канал «{chat.title}» уже есть в системе.")
         return
@@ -209,7 +212,7 @@ async def reject_broadcast(callback_query: types.CallbackQuery):
     await callback_query.message.edit_text("❌ Рассылка отклонена.")
     await callback_query.answer()
 
-# --- Подключение канала (без ручного ввода ссылки) ---
+# --- Подключение канала ---
 @dp.message(F.text == "📢 Добавить свой канал")
 async def add_channel_start(message: types.Message, state: FSMContext):
     user = db.get_user(message.from_user.id)
@@ -307,6 +310,13 @@ async def main():
             rights=ChatAdministratorRights(
                 can_post_messages=True,
                 can_edit_messages=True,
+                can_delete_messages=True,
+                can_manage_video_chats=True,
+                can_restrict_members=True,
+                can_promote_members=False,
+                can_change_info=True,
+                can_invite_users=True,
+                can_pin_messages=True,
             ),
             for_channels=True
         )
