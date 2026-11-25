@@ -19,13 +19,12 @@ logging.basicConfig(level=logging.INFO)
 # ==========================================
 # НАСТРОЙКИ
 # ==========================================
+# Если вы используете Cloudflare Worker, раскомментируйте и укажите ваш URL.
+# Если прокси не нужен (например, на зарубежном хостинге), закомментируйте PROXY_API_URL и AiohttpSession.
 PROXY_API_URL = "https://tg-proxy.vadetion.workers.dev" 
-MIN_SUBSCRIBERS = 0  
-MIN_CHANNEL_AGE_DAYS = 3 # Канал должен существовать минимум 3 дня (защита от спама)
 
-# Запрещенные слова (в нижнем регистре)
-BLACKLIST_WORDS = ["казино", "ставки", "18+", "порно", "крипто", "обменник", "заработок", "инвестиции"]
-
+# Для GitHub Actions мы будем использовать переменные окружения, которые передаются извне.
+# Но для локального теста код возьмет их из .env через config.py
 session = AiohttpSession(api=TelegramAPIServer.from_base(PROXY_API_URL))
 bot = Bot(token=BOT_TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
@@ -115,43 +114,20 @@ async def add_channel_process(message: types.Message, state: FSMContext):
 
     channel_username = "@" + link.split("/")[-1]
     
-    # 1. Проверка на дубликат
     if db.get_user_by_channel(channel_username):
         await message.answer("❌ Этот канал уже добавлен в систему другим пользователем.")
-        await state.clear()
-        return
-    
-    # 2. Проверка на запрещенные слова в юзернейме
-    if any(word in channel_username.lower() for word in BLACKLIST_WORDS):
-        await message.answer("❌ Этот канал не может быть добавлен (нарушение правил).")
         await state.clear()
         return
     
     try:
         chat = await bot.get_chat(channel_username)
         
-        # 3. Проверка на тип чата
         if chat.type not in ["channel", "supergroup"]:
             await message.answer("❌ Это не канал. Пожалуйста, отправь ссылку на канал.")
             return
             
-        # 4. Проверка на запрещенные слова в названии
-        if any(word in chat.title.lower() for word in BLACKLIST_WORDS):
-            await message.answer("❌ Название канала содержит запрещенные слова.")
-            return
-
-        # 5. Проверка на возраст канала (защита от спама)
-        # Примечание: Telegram не всегда отдает дату создания, но если отдает - проверяем
-        if hasattr(chat, 'date') and chat.date:
-             # chat.date возвращает unix timestamp
-             channel_age = datetime.now() - datetime.fromtimestamp(chat.date)
-             if channel_age.days < MIN_CHANNEL_AGE_DAYS:
-                 await message.answer(f"❌ Канал слишком новый (менее {MIN_CHANNEL_AGE_DAYS} дней). Подожди немного.")
-                 return
-            
-        # 6. Проверка на количество подписчиков
         member_count = await bot.get_chat_member_count(channel_username)
-        if member_count < MIN_SUBSCRIBERS:
+        if member_count < 0: # Если нужно, поставьте MIN_SUBSCRIBERS
             await message.answer(f"❌ В твоем канале слишком мало подписчиков ({member_count}).")
             return
             
@@ -237,7 +213,6 @@ async def invite_friend(message: types.Message):
 async def show_profile(message: types.Message):
     user = db.get_user(message.from_user.id)
     if user:
-        # user: id, username, channel_link, channel_id, points, is_active, referrer_id, views_count
         points = user[4]
         channel = user[2] if user[2] else "Не добавлен"
         is_active = "✅ Активен" if user[5] == 1 else "❌ Неактивен (удален)"
@@ -265,7 +240,17 @@ async def show_profile(message: types.Message):
 async def main():
     db.init_db()
     await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    
+    # Защита от жесткого завершения GitHub Actions (лимит 6 часов)
+    # Даем боту 5 часов 50 минут, затем корректно закрываем
+    try:
+        logging.info("Бот запущен. Ожидание сообщений...")
+        await asyncio.wait_for(dp.start_polling(bot), timeout=5.83 * 3600)
+    except asyncio.TimeoutError:
+        logging.info("Время работы подходит к концу. Завершаем сессию...")
+    finally:
+        await bot.session.close()
+        logging.info("Бот остановлен.")
 
 if __name__ == "__main__":
     asyncio.run(main())
