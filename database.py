@@ -8,7 +8,6 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # Таблица пользователей
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -17,18 +16,20 @@ def init_db():
             channel_id TEXT,
             points INTEGER DEFAULT 0,
             is_active INTEGER DEFAULT 1,
-            referrer_id INTEGER DEFAULT NULL
+            referrer_id INTEGER DEFAULT NULL,
+            views_count INTEGER DEFAULT 0
         )
     ''')
     
-    # Миграция: добавляем referrer_id, если его нет
+    # Миграция: добавляем новые колонки, если их нет
     cursor.execute("PRAGMA table_info(users)")
     columns = [column[1] for column in cursor.fetchall()]
+    
     if 'referrer_id' not in columns:
-        logging.info("Добавляем колонку referrer_id в таблицу users...")
         cursor.execute("ALTER TABLE users ADD COLUMN referrer_id INTEGER DEFAULT NULL")
+    if 'views_count' not in columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN views_count INTEGER DEFAULT 0")
 
-    # Таблица выполненных заданий
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS completed_tasks (
             user_id INTEGER,
@@ -58,42 +59,31 @@ def get_user_by_channel(channel_id: str) -> Optional[Tuple]:
     return user
 
 def register_user(user_id: int, username: str, referrer_id: int = None):
-    """
-    Регистрирует нового пользователя.
-    Если указан referrer_id и такого пользователя еще нет, начисляет пригласившему бонус.
-    """
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     try:
-        # Проверяем, существует ли уже пользователь
         cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
         if cursor.fetchone():
-            # Пользователь уже есть, ничего не делаем
             conn.close()
             return
 
-        # Вставляем нового пользователя
         cursor.execute(
             "INSERT INTO users (user_id, username, referrer_id) VALUES (?, ?, ?)", 
             (user_id, username, referrer_id)
         )
         
-        # Если есть реферер и это не сам пользователь, начисляем бонус
         if referrer_id and referrer_id != user_id:
-            # Проверяем, существует ли реферер в базе
             cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (referrer_id,))
             if cursor.fetchone():
                 cursor.execute("UPDATE users SET points = points + 50 WHERE user_id = ?", (referrer_id,))
                 logging.info(f"Пользователь {referrer_id} получил 50 баллов за приглашение {user_id}")
-                
         conn.commit()
     except Exception as e:
-        logging.error(f"Ошибка при регистрации пользователя: {e}")
+        logging.error(f"Ошибка при регистрации: {e}")
     finally:
         conn.close()
 
 def get_referral_count(user_id: int) -> int:
-    """Возвращает количество приглашенных пользователей."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM users WHERE referrer_id = ?", (user_id,))
@@ -137,7 +127,8 @@ def get_random_channel_for_user(user_id: int) -> Optional[Tuple[str, str, int]]:
     row = cursor.fetchone()
     if row:
         channel_link, channel_id, owner_id, points = row
-        cursor.execute("UPDATE users SET points = points - 1 WHERE user_id = ?", (owner_id,))
+        # Списываем 1 балл и увеличиваем счетчик показов
+        cursor.execute("UPDATE users SET points = points - 1, views_count = views_count + 1 WHERE user_id = ?", (owner_id,))
         conn.commit()
     conn.close()
     return (row[0], row[1], row[2]) if row else None
