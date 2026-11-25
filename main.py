@@ -9,7 +9,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, ChatAdministratorRights
 
 from config import BOT_TOKEN, CHANNEL_ID, PROXY_API_URL, SUPER_ADMIN_ID
 import database as db
@@ -65,8 +65,11 @@ async def on_bot_promoted_to_admin(event: types.ChatMemberUpdated):
     if chat.type != "channel":
         return
 
+    # Ищем канал в базе
     existing = db.get_user_by_channel(f"@{chat.username}" if chat.username else str(chat.id))
-    if existing:
+    
+    # Если канал найден и он АКТИВЕН, значит он уже в системе
+    if existing and existing[5] == 1:
         await bot.send_message(user_id, f"ℹ️ Канал «{chat.title}» уже есть в системе.")
         return
 
@@ -297,6 +300,20 @@ async def show_profile(message: types.Message):
 
 async def main():
     db.init_db()
+    
+    # Настраиваем права по умолчанию для каналов
+    try:
+        await bot.set_my_default_administrator_rights(
+            rights=ChatAdministratorRights(
+                can_post_messages=True,
+                can_edit_messages=True,
+            ),
+            for_channels=True
+        )
+        logging.info("Права по умолчанию для каналов установлены.")
+    except Exception as e:
+        logging.error(f"Ошибка при установке прав по умолчанию: {e}")
+
     await bot.delete_webhook(drop_pending_updates=True)
     try:
         await asyncio.wait_for(dp.start_polling(bot), timeout=5.83 * 3600)
