@@ -5,9 +5,9 @@ on:
     - cron: '0 */6 * * *'
   workflow_dispatch:
 
-# Защита от одновременного запуска: отменяет предыдущий запуск при старте нового
+# ИСПРАВЛЕНО: используем github.workflow для уникальности
 concurrency:
-  group: telegram-bot-${{ github.repository }}
+  group: ${{ github.workflow }}-${{ github.repository }}
   cancel-in-progress: true
 
 jobs:
