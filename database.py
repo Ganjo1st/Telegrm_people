@@ -66,7 +66,7 @@ def register_user(user_id: int, username: str, referrer_id: int = None):
             conn.close()
             return
 
-        # Определяем стартовые баллы: если пришел по рефке — 10, иначе 0
+        # Стартовые баллы: если пришел по рефке — 10, иначе 0
         start_points = 10 if referrer_id and referrer_id != user_id else 0
 
         cursor.execute(
@@ -104,13 +104,19 @@ def add_channel(user_id: int, channel_link: str, channel_id: str):
     conn.close()
 
 def remove_channel(user_id: int):
+    """Удаляет канал пользователя и списывает 10 баллов (штраф за удаление)."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE users SET channel_link = NULL, channel_id = NULL, is_active = 0 WHERE user_id = ?",
-        (user_id,)
-    )
-    conn.commit()
+    # Проверяем, есть ли у пользователя канал, чтобы не списать баллы дважды
+    cursor.execute("SELECT channel_id FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    if row and row[0]:
+        # Используем MAX(0, ...) чтобы баланс не ушел в минус
+        cursor.execute(
+            "UPDATE users SET channel_link = NULL, channel_id = NULL, is_active = 0, points = MAX(0, points - 10) WHERE user_id = ?",
+            (user_id,)
+        )
+        conn.commit()
     conn.close()
 
 def mark_channel_inactive(user_id: int):
@@ -159,10 +165,10 @@ def mark_task_completed(user_id: int, target_channel_id: str):
     finally:
         conn.close()
 
-# НОВАЯ ФУНКЦИЯ: Для админского начисления баллов
 def admin_add_points(user_id: int, amount: int):
+    """Начисляет или списывает баллы вручную (для админа)."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET points = points + ? WHERE user_id = ?", (amount, user_id))
+    cursor.execute("UPDATE users SET points = MAX(0, points + ?) WHERE user_id = ?", (amount, user_id))
     conn.commit()
     conn.close()
