@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import random
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandObject
@@ -12,12 +11,22 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
-from config import BOT_TOKEN, CHANNEL_ID, PROXY_API_URL, SUPER_ADMIN_ID
+from config import BOT_TOKEN, CHANNEL_ID, PROXY_API_URL
 import database as db
 
 logging.basicConfig(level=logging.INFO)
 
+# ==========================================
+# НАСТРОЙКИ
+# ==========================================
 MIN_SUBSCRIBERS = 50
+
+# !!! ВАЖНО: ВПИШИТЕ СЮДА ВАШ ID (число от @userinfobot) !!!
+SUPER_ADMIN_ID = 8738221550 
+
+# Проверка, что ID задан
+if not SUPER_ADMIN_ID or SUPER_ADMIN_ID == 123456789:
+    logging.warning("⚠️ ВНИМАНИЕ: SUPER_ADMIN_ID не изменен! Админ-панель и обход лимитов не будут работать.")
 
 session = AiohttpSession(api=TelegramAPIServer.from_base(PROXY_API_URL))
 bot = Bot(token=BOT_TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -34,7 +43,7 @@ def get_main_menu(user_id: int):
         [KeyboardButton(text="🎯 Получить задание (заработать баллы)")],
         [KeyboardButton(text="🏆 Мой профиль"), KeyboardButton(text="👥 Пригласить друга")]
     ]
-    if user_id == SUPER_ADMIN_ID:8738221550
+    if user_id == SUPER_ADMIN_ID:
         kb.append([KeyboardButton(text="👑 Админ-панель")])
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
@@ -132,12 +141,11 @@ async def approve_broadcast(callback_query: types.CallbackQuery, state: FSMConte
     text = data.get('broadcast_text')
     
     if not text:
-        await callback_query.answer("Текст не найден. Попробуйте снова.", show_alert=True)
+        await callback_query.answer("Текст не найден.", show_alert=True)
         return
 
     await callback_query.message.edit_text("🚀 Рассылка утверждена. Начинаю безопасную отправку...")
     
-    # Получаем всех пользователей
     import sqlite3
     conn = sqlite3.connect("pr_bot.db")
     cursor = conn.cursor()
@@ -153,7 +161,6 @@ async def approve_broadcast(callback_query: types.CallbackQuery, state: FSMConte
         try:
             await bot.send_message(user_id, text, disable_web_page_preview=True)
             success += 1
-            # БЕЗОПАСНАЯ ЗАДЕРЖКА: 50 мс между сообщениями (~20 сообщений/сек, ниже лимита в 30/сек)
             await asyncio.sleep(0.05)
         except Exception as e:
             error_str = str(e).lower()
@@ -161,16 +168,11 @@ async def approve_broadcast(callback_query: types.CallbackQuery, state: FSMConte
                 blocked += 1
             else:
                 fail += 1
-            # При любой ошибке небольшая пауза, чтобы не усугублять
             await asyncio.sleep(0.1)
     
     await bot.send_message(
         SUPER_ADMIN_ID, 
-        f"✅ Рассылка завершена.\n\n"
-        f"📤 Успешно: {success}\n"
-        f"🚫 Заблокировали бота: {blocked}\n"
-        f"⚠️ Прочие ошибки: {fail}\n\n"
-        f"<i>Рекомендация: для больших баз (>1000 чел) делайте перерыв между рассылками.</i>"
+        f"✅ Рассылка завершена.\n\n📤 Успешно: {success}\n🚫 Заблокировали: {blocked}\n⚠️ Ошибки: {fail}"
     )
     await callback_query.answer()
 
@@ -181,7 +183,7 @@ async def reject_broadcast(callback_query: types.CallbackQuery):
     await callback_query.message.edit_text("❌ Рассылка отклонена.")
     await callback_query.answer()
 
-# --- Добавление канала с правильной ссылкой ---
+# --- Добавление канала ---
 @dp.message(F.text == "📢 Добавить свой канал")
 async def add_channel_start(message: types.Message, state: FSMContext):
     user = db.get_user(message.from_user.id)
@@ -189,9 +191,7 @@ async def add_channel_start(message: types.Message, state: FSMContext):
         await message.answer("❌ Ты уже добавил канал.")
         return
         
-    # ПРАВИЛЬНАЯ ССЫЛКА ДЛЯ ДОБАВЛЕНИЯ БОТА В АДМИНЫ
     bot_username = (await bot.me()).username
-    # Формат: ?startchannel&admin=post_messages+edit_messages+delete_messages
     add_link = f"https://t.me/{bot_username}?startchannel&admin=post_messages+edit_messages+delete_messages"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -199,13 +199,11 @@ async def add_channel_start(message: types.Message, state: FSMContext):
     ])
     
     await message.answer(
-        "Чтобы добавить канал, нажмите кнопку ниже.\n\n"
-        "👇 <b>Нажмите «Добавить»</b>, выберите свой канал и подтвердите права.",
+        "Чтобы добавить канал, нажмите кнопку ниже.\n\n👇 <b>Нажмите «Добавить»</b>, выберите свой канал и подтвердите права.",
         reply_markup=keyboard
     )
     await message.answer(
-        "После подключения отправьте мне ссылку на канал (например, https://t.me/my_channel).\n"
-        "⚠️ Бот должен быть администратором с правами на публикацию."
+        "После подключения отправьте мне ссылку на канал (например, https://t.me/my_channel)."
     )
     await state.set_state(ChannelStates.waiting_for_link)
 
@@ -213,13 +211,13 @@ async def add_channel_start(message: types.Message, state: FSMContext):
 async def add_channel_process(message: types.Message, state: FSMContext):
     link = message.text.strip()
     if not link.startswith("https://t.me/"):
-        await message.answer("❌ Неверный формат ссылки. Она должна начинаться с https://t.me/")
+        await message.answer("❌ Неверный формат ссылки.")
         return
 
     channel_username = "@" + link.split("/")[-1]
     
     if db.get_user_by_channel(channel_username):
-        await message.answer("❌ Этот канал уже добавлен в систему.")
+        await message.answer("❌ Этот канал уже добавлен.")
         await state.clear()
         return
     
@@ -232,21 +230,22 @@ async def add_channel_process(message: types.Message, state: FSMContext):
             
         member_count = await bot.get_chat_member_count(channel_username)
         
+        # ПРОВЕРКА: Если это не супер-админ, требуем 50 подписчиков
         if message.from_user.id != SUPER_ADMIN_ID and member_count < MIN_SUBSCRIBERS:
             await message.answer(f"❌ В твоем канале слишком мало подписчиков ({member_count}). Нужно минимум {MIN_SUBSCRIBERS}.")
             return
             
         db.add_channel(message.from_user.id, link, channel_username)
         await message.answer(
-            "✅ Канал добавлен! Тебе начислено 10 баллов.",
+            "✅ Канал добавлен! +10 баллов.",
             reply_markup=get_main_menu(message.from_user.id)
         )
     except Exception as e:
-        await message.answer(f"❌ Ошибка: бот не может получить доступ к каналу.\nДетали: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
     
     await state.clear()
 
-# --- Остальные обработчики (без изменений) ---
+# --- Остальные обработчики ---
 @dp.message(F.text == "🗑 Удалить мой канал")
 async def remove_channel_handler(message: types.Message):
     user = db.get_user(message.from_user.id)
@@ -293,7 +292,7 @@ async def invite_friend(message: types.Message):
     ref_link = f"https://t.me/{bot_username}?start={message.from_user.id}"
     count = db.get_referral_count(message.from_user.id)
     
-    share_text = "Присоединяйся к системе взаимного пиара! Бонус за вход по ссылке."
+    share_text = "Присоединяйся к системе взаимного пиара! Бонус за вход."
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📤 Поделиться", url=f"https://t.me/share/url?url={ref_link}&text={share_text}")]
     ])
