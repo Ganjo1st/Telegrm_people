@@ -2,7 +2,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command, CommandObject
+from aiogram.filters import Command, CommandObject, ChatMemberUpdatedFilter, IS_NOT_MEMBER, ADMINISTRATOR
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -11,29 +11,18 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
-from config import BOT_TOKEN, CHANNEL_ID, PROXY_API_URL
+from config import BOT_TOKEN, CHANNEL_ID, PROXY_API_URL, SUPER_ADMIN_ID
 import database as db
 
 logging.basicConfig(level=logging.INFO)
 
-# ==========================================
-# НАСТРОЙКИ
-# ==========================================
 MIN_SUBSCRIBERS = 50
-
-# !!! ВАЖНО: ВПИШИТЕ СЮДА ВАШ ID (число от @userinfobot) !!!
-SUPER_ADMIN_ID = 8738221550 
-
-# Проверка, что ID задан
-if not SUPER_ADMIN_ID or SUPER_ADMIN_ID == 123456789:
-    logging.warning("⚠️ ВНИМАНИЕ: SUPER_ADMIN_ID не изменен! Админ-панель и обход лимитов не будут работать.")
 
 session = AiohttpSession(api=TelegramAPIServer.from_base(PROXY_API_URL))
 bot = Bot(token=BOT_TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
 class ChannelStates(StatesGroup):
-    waiting_for_link = State()
     waiting_for_broadcast_text = State()
 
 def get_main_menu(user_id: int):
@@ -66,6 +55,44 @@ async def check_channel_alive(channel_id: str) -> bool:
         return True
     except Exception:
         return False
+
+# --- Автоматическое подключение канала при повышении прав бота ---
+@dp.my_chat_member(ChatMemberUpdatedFilter(IS_NOT_MEMBER >> ADMINISTRATOR))
+async def on_bot_promoted_to_admin(event: types.ChatMemberUpdated):
+    chat = event.chat
+    user_id = event.from_user.id
+
+    if chat.type != "channel":
+        return
+
+    # Проверка: не добавлен ли уже этот канал
+    existing = db.get_user_by_channel(f"@{chat.username}" if chat.username else str(chat.id))
+    if existing:
+        await bot.send_message(user_id, f"ℹ️ Канал «{chat.title}» уже есть в системе.")
+        return
+
+    # Проверка минимального количества подписчиков
+    member_count = await bot.get_chat_member_count(chat.id)
+    if user_id != SUPER_ADMIN_ID and member_count < MIN_SUBSCRIBERS:
+        await bot.send_message(user_id, f"❌ В канале «{chat.title}» только {member_count} подписчиков. Нужно минимум {MIN_SUBSCRIBERS}.")
+        return
+
+    # Формируем ссылку и сохраняем в базу
+    channel_link = f"https://t.me/{chat.username}" if chat.username else f"https://t.me/c/{chat.id}"
+    channel_id = f"@{chat.username}" if chat.username else str(chat.id)
+
+    db.add_channel(user_id, channel_link, channel_id)
+    
+    # Небольшая пауза для безопасности (защита от 429)
+    await asyncio.sleep(0.5)
+    
+    await bot.send_message(
+        user_id,
+        f"✅ Канал «{chat.title}» успешно подключён!\n"
+        f"💰 Тебе начислено 10 баллов.\n"
+        f"Теперь ты можешь получать задания.",
+        reply_markup=get_main_menu(user_id)
+    )
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, command: CommandObject):
@@ -183,67 +210,26 @@ async def reject_broadcast(callback_query: types.CallbackQuery):
     await callback_query.message.edit_text("❌ Рассылка отклонена.")
     await callback_query.answer()
 
-# --- Добавление канала ---
+# --- Подключение канала (без ручного ввода ссылки) ---
 @dp.message(F.text == "📢 Добавить свой канал")
 async def add_channel_start(message: types.Message, state: FSMContext):
     user = db.get_user(message.from_user.id)
     if user and user[2]:
         await message.answer("❌ Ты уже добавил канал.")
         return
-        
+
     bot_username = (await bot.me()).username
     add_link = f"https://t.me/{bot_username}?startchannel&admin=post_messages+edit_messages+delete_messages"
-    
+
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Подключить сервис", url=add_link)]
     ])
-    
+
     await message.answer(
-        "Чтобы добавить канал, нажмите кнопку ниже.\n\n👇 <b>Нажмите «Добавить»</b>, выберите свой канал и подтвердите права.",
+        "Нажми кнопку ниже, выбери свой канал и подтверди добавление бота.\n\n"
+        "👇 <b>Нажми «Добавить»</b> — и канал автоматически привяжется к системе.",
         reply_markup=keyboard
     )
-    await message.answer(
-        "После подключения отправьте мне ссылку на канал (например, https://t.me/my_channel)."
-    )
-    await state.set_state(ChannelStates.waiting_for_link)
-
-@dp.message(ChannelStates.waiting_for_link)
-async def add_channel_process(message: types.Message, state: FSMContext):
-    link = message.text.strip()
-    if not link.startswith("https://t.me/"):
-        await message.answer("❌ Неверный формат ссылки.")
-        return
-
-    channel_username = "@" + link.split("/")[-1]
-    
-    if db.get_user_by_channel(channel_username):
-        await message.answer("❌ Этот канал уже добавлен.")
-        await state.clear()
-        return
-    
-    try:
-        chat = await bot.get_chat(channel_username)
-        
-        if chat.type not in ["channel", "supergroup"]:
-            await message.answer("❌ Это не канал.")
-            return
-            
-        member_count = await bot.get_chat_member_count(channel_username)
-        
-        # ПРОВЕРКА: Если это не супер-админ, требуем 50 подписчиков
-        if message.from_user.id != SUPER_ADMIN_ID and member_count < MIN_SUBSCRIBERS:
-            await message.answer(f"❌ В твоем канале слишком мало подписчиков ({member_count}). Нужно минимум {MIN_SUBSCRIBERS}.")
-            return
-            
-        db.add_channel(message.from_user.id, link, channel_username)
-        await message.answer(
-            "✅ Канал добавлен! +10 баллов.",
-            reply_markup=get_main_menu(message.from_user.id)
-        )
-    except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
-    
-    await state.clear()
 
 # --- Остальные обработчики ---
 @dp.message(F.text == "🗑 Удалить мой канал")
