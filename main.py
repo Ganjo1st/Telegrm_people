@@ -56,45 +56,24 @@ async def check_channel_alive(channel_id: str) -> bool:
     except Exception:
         return False
 
-# --- УПРОЩЁННЫЙ ОБРАБОТЧИК my_chat_member ---
 @dp.my_chat_member()
 async def on_bot_promoted_to_admin(event: types.ChatMemberUpdated):
-    # Срабатываем только если бот стал администратором
     if event.new_chat_member.status != "administrator":
         return
-        
     chat = event.chat
     user_id = event.from_user.id
-
     if chat.type != "channel":
         return
-
-    # Ищем канал в базе
     existing = db.get_user_by_channel(f"@{chat.username}" if chat.username else str(chat.id))
-    
     if existing and existing[5] == 1:
-        await bot.send_message(user_id, f"ℹ️ Канал «{chat.title}» уже есть в системе.")
         return
-
     member_count = await bot.get_chat_member_count(chat.id)
     if user_id != SUPER_ADMIN_ID and member_count < MIN_SUBSCRIBERS:
-        await bot.send_message(user_id, f"❌ В канале «{chat.title}» только {member_count} подписчиков. Нужно минимум {MIN_SUBSCRIBERS}.")
         return
-
     channel_link = f"https://t.me/{chat.username}" if chat.username else f"https://t.me/c/{chat.id}"
     channel_id = f"@{chat.username}" if chat.username else str(chat.id)
-
     db.add_channel(user_id, channel_link, channel_id)
-    
-    await asyncio.sleep(0.5)
-    
-    await bot.send_message(
-        user_id,
-        f"✅ Канал «{chat.title}» успешно подключён!\n"
-        f"💰 Тебе начислено 10 баллов.\n"
-        f"Теперь ты можешь получать задания.",
-        reply_markup=get_main_menu(user_id)
-    )
+    await bot.send_message(user_id, f"✅ Канал «{chat.title}» успешно подключён!")
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, command: CommandObject):
@@ -125,7 +104,6 @@ async def process_check_main_sub(callback_query: types.CallbackQuery):
     else:
         await callback_query.answer("Ты еще не подписался.", show_alert=True)
 
-# --- Админ-панель ---
 @dp.message(F.text == "👑 Админ-панель")
 async def admin_panel(message: types.Message):
     if message.from_user.id != SUPER_ADMIN_ID:
@@ -147,14 +125,11 @@ async def admin_create_broadcast(callback_query: types.CallbackQuery, state: FSM
 async def process_broadcast_text(message: types.Message, state: FSMContext):
     if message.from_user.id != SUPER_ADMIN_ID:
         return
-    
     await state.update_data(broadcast_text=message.text)
-    
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Утверждаю", callback_data="approve_broadcast")],
         [InlineKeyboardButton(text="❌ Отклоняю", callback_data="reject_broadcast")]
     ])
-    
     await message.answer(
         f"<b>Предпросмотр рассылки:</b>\n\n{message.text}\n\n<i>Нажмите кнопку для подтверждения.</i>",
         reply_markup=kb
@@ -165,27 +140,21 @@ async def process_broadcast_text(message: types.Message, state: FSMContext):
 async def approve_broadcast(callback_query: types.CallbackQuery, state: FSMContext):
     if callback_query.from_user.id != SUPER_ADMIN_ID:
         return
-    
     data = await state.get_data()
     text = data.get('broadcast_text')
-    
     if not text:
         await callback_query.answer("Текст не найден.", show_alert=True)
         return
-
     await callback_query.message.edit_text("🚀 Рассылка утверждена. Начинаю безопасную отправку...")
-    
     import sqlite3
     conn = sqlite3.connect("pr_bot.db")
     cursor = conn.cursor()
     cursor.execute("SELECT user_id FROM users")
     users = cursor.fetchall()
     conn.close()
-    
     success = 0
     fail = 0
     blocked = 0
-    
     for (user_id,) in users:
         try:
             await bot.send_message(user_id, text, disable_web_page_preview=True)
@@ -198,7 +167,6 @@ async def approve_broadcast(callback_query: types.CallbackQuery, state: FSMConte
             else:
                 fail += 1
             await asyncio.sleep(0.1)
-    
     await bot.send_message(
         SUPER_ADMIN_ID, 
         f"✅ Рассылка завершена.\n\n📤 Успешно: {success}\n🚫 Заблокировали: {blocked}\n⚠️ Ошибки: {fail}"
@@ -212,7 +180,6 @@ async def reject_broadcast(callback_query: types.CallbackQuery):
     await callback_query.message.edit_text("❌ Рассылка отклонена.")
     await callback_query.answer()
 
-# --- Подключение канала ---
 @dp.message(F.text == "📢 Добавить свой канал")
 async def add_channel_start(message: types.Message, state: FSMContext):
     user = db.get_user(message.from_user.id)
@@ -233,7 +200,6 @@ async def add_channel_start(message: types.Message, state: FSMContext):
         reply_markup=keyboard
     )
 
-# --- Остальные обработчики ---
 @dp.message(F.text == "🗑 Удалить мой канал")
 async def remove_channel_handler(message: types.Message):
     user = db.get_user(message.from_user.id)
@@ -274,19 +240,39 @@ async def process_task_check(callback_query: types.CallbackQuery):
     else:
         await callback_query.answer("❌ Ты еще не подписался.", show_alert=True)
 
+# --- КРАСИВОЕ ПРИГЛАШЕНИЕ ДРУГА ---
 @dp.message(F.text == "👥 Пригласить друга")
 async def invite_friend(message: types.Message):
+    user_id = message.from_user.id
     bot_username = (await bot.me()).username
-    ref_link = f"https://t.me/{bot_username}?start={message.from_user.id}"
-    count = db.get_referral_count(message.from_user.id)
     
-    share_text = "Присоединяйся к системе взаимного пиара! Бонус за вход."
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📤 Поделиться", url=f"https://t.me/share/url?url={ref_link}&text={share_text}")]
+    # Формируем ссылку для приглашения
+    ref_link = f"https://t.me/{bot_username}?start={user_id}"
+    count = db.get_referral_count(user_id)
+    
+    # Текст для шеринга (когда пользователь нажмет "Поделиться")
+    share_text = "Присоединяйся к системе взаимного пиара! Зарабатывай баллы и продвигай свой канал."
+    
+    # Кнопка для отправки ссылки в другие чаты
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📤 Поделиться ссылкой", url=f"https://t.me/share/url?url={ref_link}&text={share_text}")]
     ])
+    
+    # Красиво оформленный текст сообщения
     await message.answer(
-        f"👥 За друга +50 баллов (друг получает +10).\n\n🔗 <code>{ref_link}</code>\n\n📊 Приглашено: {count}",
-        reply_markup=kb
+        f"👥 <b>Приглашай друзей и зарабатывай баллы!</b>\n\n"
+        f"За каждого друга, который зайдет по твоей ссылке и запустит бота, ты получишь <b>+50 баллов</b>.\n"
+        f"А твой друг получит <b>+10 баллов</b> в подарок за регистрацию! 🎁\n\n"
+        f"👇 Нажми на кнопку ниже, чтобы отправить приглашение в любой чат:",
+        reply_markup=keyboard
+    )
+    
+    # Второе сообщение с самой ссылкой в моноширинном шрифте (для копирования)
+    await message.answer(
+        f"<i>Или скопируй ссылку вручную:</i>\n"
+        f"<code>{ref_link}</code>\n\n"
+        f"📊 Ты уже пригласил: <b>{count}</b> чел.",
+        disable_web_page_preview=True
     )
 
 @dp.message(F.text == "🏆 Мой профиль")
@@ -303,8 +289,6 @@ async def show_profile(message: types.Message):
 
 async def main():
     db.init_db()
-    
-    # Настраиваем права по умолчанию для каналов
     try:
         await bot.set_my_default_administrator_rights(
             rights=ChatAdministratorRights(
