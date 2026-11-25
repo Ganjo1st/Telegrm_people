@@ -11,7 +11,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
-from config import BOT_TOKEN, CHANNEL_ID
+from config import BOT_TOKEN, CHANNEL_ID, PROXY_API_URL
 import database as db
 
 logging.basicConfig(level=logging.INFO)
@@ -19,12 +19,8 @@ logging.basicConfig(level=logging.INFO)
 # ==========================================
 # НАСТРОЙКИ
 # ==========================================
-# Если вы используете Cloudflare Worker, раскомментируйте и укажите ваш URL.
-# Если прокси не нужен (например, на зарубежном хостинге), закомментируйте PROXY_API_URL и AiohttpSession.
-PROXY_API_URL = "https://tg-proxy.vadetion.workers.dev" 
+MIN_SUBSCRIBERS = 50  # Минимальное количество подписчиков для добавления канала
 
-# Для GitHub Actions мы будем использовать переменные окружения, которые передаются извне.
-# Но для локального теста код возьмет их из .env через config.py
 session = AiohttpSession(api=TelegramAPIServer.from_base(PROXY_API_URL))
 bot = Bot(token=BOT_TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
@@ -35,6 +31,7 @@ class ChannelStates(StatesGroup):
 def get_main_menu():
     kb = [
         [KeyboardButton(text="📢 Добавить свой канал")],
+        [KeyboardButton(text="🗑 Удалить мой канал")],
         [KeyboardButton(text="🎯 Получить задание (заработать баллы)")],
         [KeyboardButton(text="🏆 Мой профиль"), KeyboardButton(text="👥 Пригласить друга")]
     ]
@@ -127,8 +124,8 @@ async def add_channel_process(message: types.Message, state: FSMContext):
             return
             
         member_count = await bot.get_chat_member_count(channel_username)
-        if member_count < 0: # Если нужно, поставьте MIN_SUBSCRIBERS
-            await message.answer(f"❌ В твоем канале слишком мало подписчиков ({member_count}).")
+        if member_count < MIN_SUBSCRIBERS:
+            await message.answer(f"❌ В твоем канале слишком мало подписчиков ({member_count}). Для участия нужно минимум {MIN_SUBSCRIBERS}.")
             return
             
         db.add_channel(message.from_user.id, link, channel_username)
@@ -141,6 +138,19 @@ async def add_channel_process(message: types.Message, state: FSMContext):
         await message.answer(f"❌ Ошибка: бот не может получить доступ к каналу. Убедись, что он добавлен в администраторы.\nДетали: {e}")
     
     await state.clear()
+
+@dp.message(F.text == "🗑 Удалить мой канал")
+async def remove_channel_handler(message: types.Message):
+    user = db.get_user(message.from_user.id)
+    if not user or not user[2]:
+        await message.answer("❌ У тебя нет добавленного канала.")
+        return
+    
+    db.remove_channel(message.from_user.id)
+    await message.answer(
+        "✅ Твой канал удален из системы. Теперь ты можешь добавить другой канал.",
+        reply_markup=get_main_menu()
+    )
 
 @dp.message(F.text == "🎯 Получить задание (заработать баллы)")
 async def get_task(message: types.Message):
@@ -241,8 +251,6 @@ async def main():
     db.init_db()
     await bot.delete_webhook(drop_pending_updates=True)
     
-    # Защита от жесткого завершения GitHub Actions (лимит 6 часов)
-    # Даем боту 5 часов 50 минут, затем корректно закрываем
     try:
         logging.info("Бот запущен. Ожидание сообщений...")
         await asyncio.wait_for(dp.start_polling(bot), timeout=5.83 * 3600)
