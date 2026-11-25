@@ -65,25 +65,21 @@ async def on_bot_promoted_to_admin(event: types.ChatMemberUpdated):
     if chat.type != "channel":
         return
 
-    # Проверка: не добавлен ли уже этот канал
     existing = db.get_user_by_channel(f"@{chat.username}" if chat.username else str(chat.id))
     if existing:
         await bot.send_message(user_id, f"ℹ️ Канал «{chat.title}» уже есть в системе.")
         return
 
-    # Проверка минимального количества подписчиков
     member_count = await bot.get_chat_member_count(chat.id)
     if user_id != SUPER_ADMIN_ID and member_count < MIN_SUBSCRIBERS:
         await bot.send_message(user_id, f"❌ В канале «{chat.title}» только {member_count} подписчиков. Нужно минимум {MIN_SUBSCRIBERS}.")
         return
 
-    # Формируем ссылку и сохраняем в базу
     channel_link = f"https://t.me/{chat.username}" if chat.username else f"https://t.me/c/{chat.id}"
     channel_id = f"@{chat.username}" if chat.username else str(chat.id)
 
     db.add_channel(user_id, channel_link, channel_id)
     
-    # Небольшая пауза для безопасности (защита от 429)
     await asyncio.sleep(0.5)
     
     await bot.send_message(
@@ -226,8 +222,8 @@ async def add_channel_start(message: types.Message, state: FSMContext):
     ])
 
     await message.answer(
-        "Нажми кнопку ниже, выбери свой канал и подтверди добавление бота.\n\n"
-        "👇 <b>Нажми «Добавить»</b> — и канал автоматически привяжется к системе.",
+        "Чтобы добавить канал, нажмите кнопку ниже.\n\n"
+        "👇 Нажмите «Добавить», выберите свой канал и подтвердите права.",
         reply_markup=keyboard
     )
 
