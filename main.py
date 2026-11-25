@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import random
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandObject
@@ -16,18 +17,16 @@ import database as db
 
 logging.basicConfig(level=logging.INFO)
 
-MIN_SUBSCRIBERS = 50  # Для обычных пользователей
+MIN_SUBSCRIBERS = 50
 
 session = AiohttpSession(api=TelegramAPIServer.from_base(PROXY_API_URL))
 bot = Bot(token=BOT_TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# Состояния
 class ChannelStates(StatesGroup):
     waiting_for_link = State()
-    waiting_for_broadcast_text = State()  # Для ввода текста рассылки
+    waiting_for_broadcast_text = State()
 
-# --- Клавиатуры ---
 def get_main_menu(user_id: int):
     kb = [
         [KeyboardButton(text="📢 Добавить свой канал")],
@@ -45,7 +44,6 @@ def get_sub_check_kb(channel_link: str, channel_id: str):
         [InlineKeyboardButton(text="✅ Я подписался (Проверить)", callback_data=f"check_task_{channel_id}")]
     ])
 
-# --- Вспомогательные функции ---
 async def is_subscribed(user_id: int, channel_id: str) -> bool:
     try:
         member = await bot.get_chat_member(chat_id=channel_id, user_id=user_id)
@@ -60,7 +58,6 @@ async def check_channel_alive(channel_id: str) -> bool:
     except Exception:
         return False
 
-# --- Обработчики ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, command: CommandObject):
     referrer_id = None
@@ -71,8 +68,7 @@ async def cmd_start(message: types.Message, command: CommandObject):
     
     if await is_subscribed(message.from_user.id, CHANNEL_ID):
         await message.answer(
-            f"Привет, {message.from_user.full_name}! 👋\n\n"
-            "Выбирай действие на клавиатуре ниже.",
+            f"Привет, {message.from_user.full_name}! 👋\n\nВыбирай действие на клавиатуре ниже.",
             reply_markup=get_main_menu(message.from_user.id)
         )
     else:
@@ -98,7 +94,6 @@ async def admin_panel(message: types.Message):
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📝 Создать промо-рассылку", callback_data="admin_create_broadcast")],
-        [InlineKeyboardButton(text="💰 Начислить баллы", callback_data="admin_add_points_menu")]
     ])
     await message.answer("👑 Добро пожаловать в админ-панель.", reply_markup=kb)
 
@@ -115,7 +110,6 @@ async def process_broadcast_text(message: types.Message, state: FSMContext):
     if message.from_user.id != SUPER_ADMIN_ID:
         return
     
-    # Сохраняем текст и показываем предпросмотр с кнопками утверждения
     await state.update_data(broadcast_text=message.text)
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -124,8 +118,7 @@ async def process_broadcast_text(message: types.Message, state: FSMContext):
     ])
     
     await message.answer(
-        f"<b>Предпросмотр рассылки:</b>\n\n{message.text}\n\n"
-        f"<i>Нажмите кнопку для подтверждения.</i>",
+        f"<b>Предпросмотр рассылки:</b>\n\n{message.text}\n\n<i>Нажмите кнопку для подтверждения.</i>",
         reply_markup=kb
     )
     await state.clear()
@@ -142,10 +135,9 @@ async def approve_broadcast(callback_query: types.CallbackQuery, state: FSMConte
         await callback_query.answer("Текст не найден. Попробуйте снова.", show_alert=True)
         return
 
-    await callback_query.message.edit_text("🚀 Рассылка утверждена. Начинаю отправку...")
+    await callback_query.message.edit_text("🚀 Рассылка утверждена. Начинаю безопасную отправку...")
     
-    # Получаем всех пользователей из БД (нужно добавить функцию в database.py)
-    # Для простоты создадим inline-запрос здесь, но лучше вынести в БД
+    # Получаем всех пользователей
     import sqlite3
     conn = sqlite3.connect("pr_bot.db")
     cursor = conn.cursor()
@@ -155,16 +147,31 @@ async def approve_broadcast(callback_query: types.CallbackQuery, state: FSMConte
     
     success = 0
     fail = 0
+    blocked = 0
+    
     for (user_id,) in users:
         try:
             await bot.send_message(user_id, text, disable_web_page_preview=True)
             success += 1
-            # Задержка, чтобы не получить бан (лимит Telegram ~30 сообщений/сек)
-            await asyncio.sleep(0.1) 
-        except Exception:
-            fail += 1
+            # БЕЗОПАСНАЯ ЗАДЕРЖКА: 50 мс между сообщениями (~20 сообщений/сек, ниже лимита в 30/сек)
+            await asyncio.sleep(0.05)
+        except Exception as e:
+            error_str = str(e).lower()
+            if "blocked" in error_str or "forbidden" in error_str or "chat not found" in error_str:
+                blocked += 1
+            else:
+                fail += 1
+            # При любой ошибке небольшая пауза, чтобы не усугублять
+            await asyncio.sleep(0.1)
     
-    await bot.send_message(SUPER_ADMIN_ID, f"✅ Рассылка завершена.\nУспешно: {success}\nОшибок: {fail}")
+    await bot.send_message(
+        SUPER_ADMIN_ID, 
+        f"✅ Рассылка завершена.\n\n"
+        f"📤 Успешно: {success}\n"
+        f"🚫 Заблокировали бота: {blocked}\n"
+        f"⚠️ Прочие ошибки: {fail}\n\n"
+        f"<i>Рекомендация: для больших баз (>1000 чел) делайте перерыв между рассылками.</i>"
+    )
     await callback_query.answer()
 
 @dp.callback_query(F.data == "reject_broadcast")
@@ -174,17 +181,31 @@ async def reject_broadcast(callback_query: types.CallbackQuery):
     await callback_query.message.edit_text("❌ Рассылка отклонена.")
     await callback_query.answer()
 
-# --- Добавление канала (с проверкой для супер-админа) ---
+# --- Добавление канала с правильной ссылкой ---
 @dp.message(F.text == "📢 Добавить свой канал")
 async def add_channel_start(message: types.Message, state: FSMContext):
     user = db.get_user(message.from_user.id)
     if user and user[2]:
-        await message.answer("❌ Ты уже добавил канал. Один пользователь может продвигать только один канал.")
+        await message.answer("❌ Ты уже добавил канал.")
         return
         
+    # ПРАВИЛЬНАЯ ССЫЛКА ДЛЯ ДОБАВЛЕНИЯ БОТА В АДМИНЫ
+    bot_username = (await bot.me()).username
+    # Формат: ?startchannel&admin=post_messages+edit_messages+delete_messages
+    add_link = f"https://t.me/{bot_username}?startchannel&admin=post_messages+edit_messages+delete_messages"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подключить сервис", url=add_link)]
+    ])
+    
     await message.answer(
-        "Отправь мне ссылку на свой канал (например, https://t.me/my_channel).\n"
-        "⚠️ Важно: добавь нашего бота в администраторы своего канала!"
+        "Чтобы добавить канал, нажмите кнопку ниже.\n\n"
+        "👇 <b>Нажмите «Добавить»</b>, выберите свой канал и подтвердите права.",
+        reply_markup=keyboard
+    )
+    await message.answer(
+        "После подключения отправьте мне ссылку на канал (например, https://t.me/my_channel).\n"
+        "⚠️ Бот должен быть администратором с правами на публикацию."
     )
     await state.set_state(ChannelStates.waiting_for_link)
 
@@ -198,7 +219,7 @@ async def add_channel_process(message: types.Message, state: FSMContext):
     channel_username = "@" + link.split("/")[-1]
     
     if db.get_user_by_channel(channel_username):
-        await message.answer("❌ Этот канал уже добавлен в систему другим пользователем.")
+        await message.answer("❌ Этот канал уже добавлен в систему.")
         await state.clear()
         return
     
@@ -206,20 +227,18 @@ async def add_channel_process(message: types.Message, state: FSMContext):
         chat = await bot.get_chat(channel_username)
         
         if chat.type not in ["channel", "supergroup"]:
-            await message.answer("❌ Это не канал. Пожалуйста, отправь ссылку на канал.")
+            await message.answer("❌ Это не канал.")
             return
             
         member_count = await bot.get_chat_member_count(channel_username)
         
-        # ПРОВЕРКА: Если это не супер-админ, требуем 50 подписчиков
         if message.from_user.id != SUPER_ADMIN_ID and member_count < MIN_SUBSCRIBERS:
-            await message.answer(f"❌ В твоем канале слишком мало подписчиков ({member_count}). Для участия нужно минимум {MIN_SUBSCRIBERS}.")
+            await message.answer(f"❌ В твоем канале слишком мало подписчиков ({member_count}). Нужно минимум {MIN_SUBSCRIBERS}.")
             return
             
         db.add_channel(message.from_user.id, link, channel_username)
         await message.answer(
-            "✅ Твой канал успешно добавлен в очередь!\n"
-            "Тебе начислено 10 баллов.",
+            "✅ Канал добавлен! Тебе начислено 10 баллов.",
             reply_markup=get_main_menu(message.from_user.id)
         )
     except Exception as e:
@@ -227,7 +246,7 @@ async def add_channel_process(message: types.Message, state: FSMContext):
     
     await state.clear()
 
-# --- Остальные обработчики (без изменений, но с передачей user_id в меню) ---
+# --- Остальные обработчики (без изменений) ---
 @dp.message(F.text == "🗑 Удалить мой канал")
 async def remove_channel_handler(message: types.Message):
     user = db.get_user(message.from_user.id)
@@ -235,7 +254,7 @@ async def remove_channel_handler(message: types.Message):
         await message.answer("❌ У тебя нет добавленного канала.")
         return
     db.remove_channel(message.from_user.id)
-    await message.answer("✅ Твой канал удален.", reply_markup=get_main_menu(message.from_user.id))
+    await message.answer("✅ Канал удален.", reply_markup=get_main_menu(message.from_user.id))
 
 @dp.message(F.text == "🎯 Получить задание (заработать баллы)")
 async def get_task(message: types.Message):
@@ -253,8 +272,7 @@ async def get_task(message: types.Message):
         return
 
     await message.answer(
-        f"🎯 <b>Новое задание!</b>\n\nПодпишись на этот канал: {channel_link}\n\n"
-        f"После подписки нажми кнопку ниже.",
+        f"🎯 <b>Новое задание!</b>\n\nПодпишись на этот канал: {channel_link}\n\nПосле подписки нажми кнопку ниже.",
         reply_markup=get_sub_check_kb(channel_link, channel_id),
         disable_web_page_preview=True
     )
@@ -280,9 +298,7 @@ async def invite_friend(message: types.Message):
         [InlineKeyboardButton(text="📤 Поделиться", url=f"https://t.me/share/url?url={ref_link}&text={share_text}")]
     ])
     await message.answer(
-        f"👥 За друга +50 баллов (друг получает +10).\n\n"
-        f"🔗 <code>{ref_link}</code>\n\n"
-        f"📊 Приглашено: {count}",
+        f"👥 За друга +50 баллов (друг получает +10).\n\n🔗 <code>{ref_link}</code>\n\n📊 Приглашено: {count}",
         reply_markup=kb
     )
 
@@ -293,8 +309,7 @@ async def show_profile(message: types.Message):
         points, channel, views = user[4], user[2] or "Нет", user[7] if len(user) > 7 else 0
         is_active = "✅" if user[5] == 1 else "❌"
         await message.answer(
-            f"🏆 <b>Профиль:</b>\n\n📢 {channel} {is_active}\n"
-            f"💰 Баллы: <b>{points}</b>\n👁 Показов: {views}"
+            f"🏆 <b>Профиль:</b>\n\n📢 {channel} {is_active}\n💰 Баллы: <b>{points}</b>\n👁 Показов: {views}"
         )
     else:
         await message.answer("Напиши /start")
