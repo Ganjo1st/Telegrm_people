@@ -66,9 +66,12 @@ def register_user(user_id: int, username: str, referrer_id: int = None):
             conn.close()
             return
 
+        # Определяем стартовые баллы: если пришел по рефке — 10, иначе 0
+        start_points = 10 if referrer_id and referrer_id != user_id else 0
+
         cursor.execute(
-            "INSERT INTO users (user_id, username, referrer_id) VALUES (?, ?, ?)", 
-            (user_id, username, referrer_id)
+            "INSERT INTO users (user_id, username, referrer_id, points) VALUES (?, ?, ?, ?)", 
+            (user_id, username, referrer_id, start_points)
         )
         
         if referrer_id and referrer_id != user_id:
@@ -101,7 +104,6 @@ def add_channel(user_id: int, channel_link: str, channel_id: str):
     conn.close()
 
 def remove_channel(user_id: int):
-    """Удаляет канал пользователя из базы."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute(
@@ -156,3 +158,11 @@ def mark_task_completed(user_id: int, target_channel_id: str):
         logging.error(f"Ошибка при отметке задания: {e}")
     finally:
         conn.close()
+
+# НОВАЯ ФУНКЦИЯ: Для админского начисления баллов
+def admin_add_points(user_id: int, amount: int):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET points = points + ? WHERE user_id = ?", (amount, user_id))
+    conn.commit()
+    conn.close()
