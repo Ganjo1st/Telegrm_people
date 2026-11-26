@@ -240,7 +240,7 @@ async def process_task_check(callback_query: types.CallbackQuery):
     else:
         await callback_query.answer("❌ Ты еще не подписался.", show_alert=True)
 
-# --- КРАСИВОЕ ПРИГЛАШЕНИЕ ДРУГА ---
+# --- ОБНОВЛЕННОЕ ПРИГЛАШЕНИЕ ДРУГА ---
 @dp.message(F.text == "👥 Пригласить друга")
 async def invite_friend(message: types.Message):
     user_id = message.from_user.id
@@ -250,26 +250,25 @@ async def invite_friend(message: types.Message):
     ref_link = f"https://t.me/{bot_username}?start={user_id}"
     count = db.get_referral_count(user_id)
     
-    # Текст для шеринга (когда пользователь нажмет "Поделиться")
-    share_text = "Присоединяйся к системе взаимного пиара! Зарабатывай баллы и продвигай свой канал."
+    share_text = "Присоединяйся к системе взаимного пиара! Бонус за вход."
     
-    # Кнопка для отправки ссылки в другие чаты
+    # Создаем inline-кнопку для отправки (Поделиться)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📤 Поделиться ссылкой", url=f"https://t.me/share/url?url={ref_link}&text={share_text}")]
+        [InlineKeyboardButton(text="📤 Поделиться", url=f"https://t.me/share/url?url={ref_link}&text={share_text}")]
     ])
     
-    # Красиво оформленный текст сообщения
+    # Отправляем сообщение с красивым текстом и кнопкой
     await message.answer(
         f"👥 <b>Приглашай друзей и зарабатывай баллы!</b>\n\n"
         f"За каждого друга, который зайдет по твоей ссылке и запустит бота, ты получишь <b>+50 баллов</b>.\n"
-        f"А твой друг получит <b>+10 баллов</b> в подарок за регистрацию! 🎁\n\n"
-        f"👇 Нажми на кнопку ниже, чтобы отправить приглашение в любой чат:",
+        f"А твой друг получит <b>+10 баллов</b> в подарок! 🎁\n\n"
+        f"👇 Нажми на кнопку ниже, чтобы отправить приглашение:",
         reply_markup=keyboard
     )
     
-    # Второе сообщение с самой ссылкой в моноширинном шрифте (для копирования)
+    # Второе сообщение с "кликабельным" текстом для копирования
     await message.answer(
-        f"<i>Или скопируй ссылку вручную:</i>\n"
+        f"<i>Или скопируй ссылку вручную, нажав на неё:</i>\n"
         f"<code>{ref_link}</code>\n\n"
         f"📊 Ты уже пригласил: <b>{count}</b> чел.",
         disable_web_page_preview=True
