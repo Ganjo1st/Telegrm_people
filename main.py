@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandObject
 from aiogram.enums import ParseMode
@@ -22,8 +21,9 @@ session = AiohttpSession(api=TelegramAPIServer.from_base(PROXY_API_URL))
 bot = Bot(token=BOT_TOKEN, session=session, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-class ChannelStates(StatesGroup):
-    waiting_for_broadcast_text = State()
+# Состояния больше не нужны для рассылки, оставляем пустым или убираем
+# class ChannelStates(StatesGroup):
+#     pass
 
 def get_main_menu(user_id: int):
     kb = [
@@ -32,8 +32,7 @@ def get_main_menu(user_id: int):
         [KeyboardButton(text="🎯 Получить задание (заработать баллы)")],
         [KeyboardButton(text="🏆 Мой профиль"), KeyboardButton(text="👥 Пригласить друга")]
     ]
-    if user_id == SUPER_ADMIN_ID:
-        kb.append([KeyboardButton(text="👑 Админ-панель")])
+    # Убрали кнопку "Админ-панель", так как рассылка удалена
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 def get_sub_check_kb(channel_link: str, channel_id: str):
@@ -104,82 +103,6 @@ async def process_check_main_sub(callback_query: types.CallbackQuery):
     else:
         await callback_query.answer("Ты еще не подписался.", show_alert=True)
 
-@dp.message(F.text == "👑 Админ-панель")
-async def admin_panel(message: types.Message):
-    if message.from_user.id != SUPER_ADMIN_ID:
-        return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📝 Создать промо-рассылку", callback_data="admin_create_broadcast")],
-    ])
-    await message.answer("👑 Добро пожаловать в админ-панель.", reply_markup=kb)
-
-@dp.callback_query(F.data == "admin_create_broadcast")
-async def admin_create_broadcast(callback_query: types.CallbackQuery, state: FSMContext):
-    if callback_query.from_user.id != SUPER_ADMIN_ID:
-        return
-    await callback_query.message.answer("Введите текст промо-сообщения для рассылки (можно использовать HTML):")
-    await state.set_state(ChannelStates.waiting_for_broadcast_text)
-    await callback_query.answer()
-
-@dp.message(ChannelStates.waiting_for_broadcast_text)
-async def process_broadcast_text(message: types.Message, state: FSMContext):
-    if message.from_user.id != SUPER_ADMIN_ID:
-        return
-    await state.update_data(broadcast_text=message.text)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Утверждаю", callback_data="approve_broadcast")],
-        [InlineKeyboardButton(text="❌ Отклоняю", callback_data="reject_broadcast")]
-    ])
-    await message.answer(
-        f"<b>Предпросмотр рассылки:</b>\n\n{message.text}\n\n<i>Нажмите кнопку для подтверждения.</i>",
-        reply_markup=kb
-    )
-    await state.clear()
-
-@dp.callback_query(F.data == "approve_broadcast")
-async def approve_broadcast(callback_query: types.CallbackQuery, state: FSMContext):
-    if callback_query.from_user.id != SUPER_ADMIN_ID:
-        return
-    data = await state.get_data()
-    text = data.get('broadcast_text')
-    if not text:
-        await callback_query.answer("Текст не найден.", show_alert=True)
-        return
-    await callback_query.message.edit_text("🚀 Рассылка утверждена. Начинаю безопасную отправку...")
-    import sqlite3
-    conn = sqlite3.connect("pr_bot.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM users")
-    users = cursor.fetchall()
-    conn.close()
-    success = 0
-    fail = 0
-    blocked = 0
-    for (user_id,) in users:
-        try:
-            await bot.send_message(user_id, text, disable_web_page_preview=True)
-            success += 1
-            await asyncio.sleep(0.05)
-        except Exception as e:
-            error_str = str(e).lower()
-            if "blocked" in error_str or "forbidden" in error_str or "chat not found" in error_str:
-                blocked += 1
-            else:
-                fail += 1
-            await asyncio.sleep(0.1)
-    await bot.send_message(
-        SUPER_ADMIN_ID, 
-        f"✅ Рассылка завершена.\n\n📤 Успешно: {success}\n🚫 Заблокировали: {blocked}\n⚠️ Ошибки: {fail}"
-    )
-    await callback_query.answer()
-
-@dp.callback_query(F.data == "reject_broadcast")
-async def reject_broadcast(callback_query: types.CallbackQuery):
-    if callback_query.from_user.id != SUPER_ADMIN_ID:
-        return
-    await callback_query.message.edit_text("❌ Рассылка отклонена.")
-    await callback_query.answer()
-
 @dp.message(F.text == "📢 Добавить свой канал")
 async def add_channel_start(message: types.Message, state: FSMContext):
     user = db.get_user(message.from_user.id)
@@ -240,24 +163,18 @@ async def process_task_check(callback_query: types.CallbackQuery):
     else:
         await callback_query.answer("❌ Ты еще не подписался.", show_alert=True)
 
-# --- ОБНОВЛЕННОЕ ПРИГЛАШЕНИЕ ДРУГА ---
 @dp.message(F.text == "👥 Пригласить друга")
 async def invite_friend(message: types.Message):
     user_id = message.from_user.id
     bot_username = (await bot.me()).username
-    
-    # Формируем ссылку для приглашения
     ref_link = f"https://t.me/{bot_username}?start={user_id}"
     count = db.get_referral_count(user_id)
     
     share_text = "Присоединяйся к системе взаимного пиара! Бонус за вход."
-    
-    # Создаем inline-кнопку для отправки (Поделиться)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📤 Поделиться", url=f"https://t.me/share/url?url={ref_link}&text={share_text}")]
     ])
     
-    # Отправляем сообщение с красивым текстом и кнопкой
     await message.answer(
         f"👥 <b>Приглашай друзей и зарабатывай баллы!</b>\n\n"
         f"За каждого друга, который зайдет по твоей ссылке и запустит бота, ты получишь <b>+50 баллов</b>.\n"
@@ -266,7 +183,6 @@ async def invite_friend(message: types.Message):
         reply_markup=keyboard
     )
     
-    # Второе сообщение с "кликабельным" текстом для копирования
     await message.answer(
         f"<i>Или скопируй ссылку вручную, нажав на неё:</i>\n"
         f"<code>{ref_link}</code>\n\n"
